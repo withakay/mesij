@@ -1,0 +1,8 @@
+{
+  "name": "mesij",
+  "description": "Coordinate concurrent coding agents through the mesij event log",
+  "version": "0.1.0",
+  "author": {
+    "name": "mesij"
+  }
+}
