@@ -15,7 +15,8 @@ Use `mesij` whenever this repository may have concurrent agents.
    `mesij reply --to SESSION --reply-to EVENT_ID --message "..."`
 4. Announce planning before changing code:
    `mesij plan --task TASK_ID --change CHANGE_ID --file PATH --key "TASK_ID:plan" --message "intent"`
-5. Move the same work identity into implementation before editing:
+5. Move the same work identity into implementation before editing. Repeat
+   `--file` for every likely path, or use `mesij emit` with a JSON `files` array:
    `mesij implement --task TASK_ID --change CHANGE_ID --file PATH [--file PATH...] --key "TASK_ID:implement" --message "approach"`
 6. Post decisions or useful progress with a stable retry key:
    `mesij post --type progress.updated --task TASK_ID --key KEY --message "..."`

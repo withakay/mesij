@@ -236,3 +236,20 @@ func TestResolveWorkRejectsAmbiguousActiveClaims(t *testing.T) {
 		t.Fatalf("expected ambiguous work, got %v", err)
 	}
 }
+func TestListHonorsSnapshotHighWater(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	for i := 0; i < 4; i++ {
+		in := testEvent(fmt.Sprintf("snapshot-%d", i), "message")
+		if _, _, err := db.Append(ctx, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := db.List(ctx, Query{ProjectID: "project", After: 1, Through: 3, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Sequence != 2 || events[1].Sequence != 3 {
+		t.Fatalf("snapshot events = %+v", events)
+	}
+}

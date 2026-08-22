@@ -42,12 +42,21 @@ mesij check --session "$MESIJ_SESSION" --after "$CURSOR" --json
 mesij check --task "$TASK_ID" --change "$CHANGE_ID" --file PATH --json
 ```
 
-Persist the greatest returned sequence as the next cursor. Plugins can map
-harness planning and implementation lifecycle callbacks to `mesij plan` and
-`mesij implement`. To integrate an edit tool, call `check --file PATH --json`
-before the tool executes. Avoid silently creating claims for every write:
-claims should describe a coherent work identity and all known task, change, and
-file scopes.
+For a continuous event stream, prefer JSONL tailing:
+
+```sh
+mesij tail --after "$CURSOR" --follow --session "$MESIJ_SESSION"
+```
+
+Each line is one immutable event. Persist each event's `sequence` as the next
+cursor. For request/response integrations, plugins can submit a JSON object with
+a `files` array through `mesij emit`.
+
+Plugins can map harness planning and implementation lifecycle callbacks to
+`mesij plan` and `mesij implement`. To integrate an edit tool, call
+`check --file PATH --json` before the tool executes. Avoid silently creating
+claims for every write: claims should describe a coherent work identity and all
+known task, change, and file scopes.
 
 ## Environment
 

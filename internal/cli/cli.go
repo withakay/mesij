@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ Usage:
   mesij [--db PATH] [--project NAME] init
   mesij [--db PATH] session --actor NAME
   mesij [--db PATH] post --actor NAME --session ID --type TYPE [options] [MESSAGE]
+  mesij [--db PATH] emit [--input PATH]
   mesij [--db PATH] reply --actor NAME --session ID --to SESSION [options] [MESSAGE]
   mesij [--db PATH] plan --actor NAME --session ID [targets] [options]
   mesij [--db PATH] implement --actor NAME --session ID [targets] [options]
@@ -29,6 +31,7 @@ Usage:
   mesij [--db PATH] finish --actor NAME --session ID [targets] [--message TEXT]
   mesij [--db PATH] defer --actor NAME --session ID [targets] [--message TEXT]
   mesij [--db PATH] check [--after SEQUENCE] [--task ID] [--change ID] [--file PATH] [options]
+  mesij [--db PATH] tail [--after SEQUENCE] [--follow]
   mesij [--db PATH] tui
   mesij [--db PATH] status [--json]
 
@@ -48,18 +51,28 @@ Override these with --db/MESIJ_DB and --project/MESIJ_PROJECT.
 `
 
 type Runner struct {
+	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
 	Dir    string
 }
 
 func (r Runner) Run(ctx context.Context, args []string) int {
+	emitRequested := commandHint(args) == "emit"
 	global := flag.NewFlagSet("mesij", flag.ContinueOnError)
-	global.SetOutput(r.Stderr)
+	var globalErrors bytes.Buffer
+	if emitRequested {
+		global.SetOutput(&globalErrors)
+	} else {
+		global.SetOutput(r.Stderr)
+	}
 	dbPath := global.String("db", "", "SQLite database path")
 	projectName := global.String("project", "", "project name (or MESIJ_PROJECT)")
 	global.Usage = func() { fmt.Fprint(r.Stderr, usage) }
 	if err := global.Parse(args); err != nil {
+		if emitRequested {
+			return r.emitFailure(2, strings.TrimSpace(globalErrors.String()))
+		}
 		return 2
 	}
 	remaining := global.Args()
@@ -76,6 +89,9 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 
 	p, err := project.Discover(r.Dir, *dbPath, *projectName)
 	if err != nil {
+		if command == "emit" {
+			return r.emitFailure(1, err.Error())
+		}
 		fmt.Fprintf(r.Stderr, "mesij: %v\n", err)
 		return 1
 	}
@@ -85,6 +101,8 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		return r.init(ctx, p, commandArgs)
 	case "session":
 		return r.session(ctx, p, commandArgs)
+	case "emit":
+		return r.emit(ctx, p, commandArgs)
 	case "post":
 		return r.post(ctx, p, commandArgs, "message.posted", false)
 	case "reply":
@@ -101,6 +119,8 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		return r.lifecycle(ctx, p, commandArgs, "work.deferred")
 	case "check":
 		return r.check(ctx, p, commandArgs)
+	case "tail":
+		return r.tail(ctx, p, commandArgs)
 	case "tui":
 		return r.tui(ctx, p, commandArgs)
 	case "status":
@@ -110,6 +130,23 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		global.Usage()
 		return 2
 	}
+}
+
+func commandHint(args []string) string {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--db" || arg == "--project":
+			i++
+		case strings.HasPrefix(arg, "--db=") || strings.HasPrefix(arg, "--project="):
+			continue
+		case arg == "--" && i+1 < len(args):
+			return args[i+1]
+		case !strings.HasPrefix(arg, "-"):
+			return arg
+		}
+	}
+	return ""
 }
 
 func (r Runner) init(ctx context.Context, p project.Context, args []string) int {

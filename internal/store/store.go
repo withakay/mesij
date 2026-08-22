@@ -54,6 +54,7 @@ type NewEvent struct {
 type Query struct {
 	ProjectID  string
 	After      int64
+	Through    int64
 	Limit      int
 	Actor      string
 	Type       string
@@ -263,6 +264,7 @@ SELECT sequence, id, project_id, actor, session_id, recipient_session, reply_to,
        payload, worktree, branch, commit_sha, idempotency_key, created_at
 FROM events
 WHERE project_id = ? AND sequence > ?
+  AND (? = 0 OR sequence <= ?)
   AND (? = '' OR actor = ?)
   AND (? = '' OR event_type = ?)
   AND (? = '' OR recipient_session = '' OR recipient_session = ? OR session_id = ?)`
@@ -272,7 +274,7 @@ WHERE project_id = ? AND sequence > ?
 		order = ""
 	}
 	rows, err := d.db.QueryContext(ctx, base+order,
-		q.ProjectID, q.After, q.Actor, q.Actor, q.Type, q.Type, q.ForSession, q.ForSession, q.ForSession, q.Limit)
+		q.ProjectID, q.After, q.Through, q.Through, q.Actor, q.Actor, q.Type, q.Type, q.ForSession, q.ForSession, q.ForSession, q.Limit)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +288,12 @@ WHERE project_id = ? AND sequence > ?
 		events = append(events, e)
 	}
 	return events, rows.Err()
+}
+
+func (d *DB) LatestSequence(ctx context.Context, projectID string) (int64, error) {
+	var sequence int64
+	err := d.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE project_id = ?", projectID).Scan(&sequence)
+	return sequence, err
 }
 
 func (d *DB) ResolveWork(ctx context.Context, projectID, session, task, change string) (string, bool, error) {

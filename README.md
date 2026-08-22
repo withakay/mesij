@@ -94,25 +94,70 @@ and `reply` require a session.
 - `start` — legacy/general active claim using `work.started`; treated as implement.
 - `finish` / `defer` — close a work claim through another immutable event.
 - `post` — append an arbitrary typed message.
+- `emit` — read one strict JSON request from stdin or `--input PATH`, then write
+  the resulting event as JSON.
 - `reply` — append a message addressed to a session.
 - `status` — show project, worktree, branch, commit, and database identity.
+- `tail` — emit the event stream as JSONL; add `--follow` to keep watching.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
   `r` to refresh, and `q` or `Esc` to quit.
 
 Lifecycle commands accept `--work`, `--task`, `--change`, and repeatable
-`--file`. The work identity defaults to `task:TASK` or `change:CHANGE`; use an
-explicit `--work` when neither is present. Reusing the same identity moves one
-claim from plan to implement to finished/deferred. Known task/change/file scopes
+`--file`; pass `--file` once per affected path. The work identity defaults to
+`task:TASK` or `change:CHANGE`; use an explicit `--work` when neither is present.
+Reusing the same identity moves one claim from plan to implement to
+finished/deferred. Known task/change/file scopes
 are carried forward conservatively, so an implementation event does not need to
 repeat every file named during planning. If task/change identities are ambiguous,
 mesij asks for an explicit `--work`.
 
 Use `--json` with session, post, lifecycle, status, or check commands for agent
-integration. `check --json` returns one coordination report containing
-`active_work` and `messages`. Active entries keep the immutable stored `payload`
-and may include a derived `projection` containing scopes carried forward from
-prior lifecycle events. Supplying `check --session ID` includes broadcasts
-and messages addressed to that session; omitting it displays the complete log.
+integration. For JSON input and output, use `emit`:
+
+```sh
+cat <<'JSON' | mesij --project payments emit
+{
+  "event": "implement",
+  "actor": "agent-blue",
+  "session": "session-123",
+  "task": "pay-142",
+  "change": "capture-v2",
+  "files": [
+    "internal/payments/handler.go",
+    "internal/payments/service.go",
+    "migrations/0142.sql"
+  ],
+  "key": "pay-142:implement",
+  "message": "Implementing the agreed plan"
+}
+JSON
+```
+
+`event` accepts `plan`, `implement`, `start`, `finish`, `defer`, `post`, or
+`reply`. Alternatively, provide an arbitrary `type`. Unknown JSON fields and
+multiple top-level values are rejected. Successful output is the event JSON;
+failures are JSON objects containing `ok`, `error`, and `exit_code`.
+
+For long-running consumers, `tail` writes one event per line:
+
+```sh
+# Replay from the beginning without gaps, then wait for new events.
+mesij --project payments tail --after 0 --follow
+
+# Route broadcasts and direct messages for one session.
+mesij --project payments tail --after 42 --follow \
+  --session "$MESIJ_SESSION"
+```
+
+Without an explicit `--after`, `tail` emits the most recent window. With
+`--after 0`, it starts at the first event. Filters include `--from`, `--type`,
+`--session`, `--limit`, and `--poll`.
+
+`check --json` returns one coordination report containing `active_work` and
+`messages`. Active entries keep the immutable stored `payload` and may include a
+derived `projection` containing scopes carried forward from prior lifecycle
+events. Supplying `check --session ID` includes broadcasts and messages
+addressed to that session; omitting it displays the complete log.
 
 ## Harness integrations
 
