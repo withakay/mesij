@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -140,5 +141,98 @@ FROM events WHERE id = ?`, event.ID)
 	}
 	if got.Actor != event.Actor {
 		t.Fatalf("actor changed to %q", got.Actor)
+	}
+}
+
+func TestPlanImplementFinishProjectionPreservesScopes(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	appendEvent := func(kind, key string, payload map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		_, _, err := db.Append(ctx, NewEvent{
+			ProjectID: "project", Actor: "agent", Session: "session", Type: kind,
+			Payload: body, Worktree: "/repo", IdempotencyKey: key,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent("work.planned", "plan", map[string]any{
+		"task": "task-42", "change": "api-v2", "phase": "plan", "files": []string{"internal/api.go"},
+	})
+	active, err := db.Active(ctx, "project")
+	if err != nil || len(active) != 1 || active[0].Type != "work.planned" {
+		t.Fatalf("planned active work = %+v, err=%v", active, err)
+	}
+	// The implementing event need not repeat scopes already established by the
+	// plan; the event-sourced projection carries them forward conservatively.
+	appendEvent("work.implementing", "implement", map[string]any{
+		"task": "task-42", "phase": "implement",
+	})
+	active, err = db.Active(ctx, "project")
+	if err != nil || len(active) != 1 || active[0].Type != "work.implementing" {
+		t.Fatalf("implementing active work = %+v, err=%v", active, err)
+	}
+	var projected projectionPayload
+	if err := json.Unmarshal(active[0].Projection, &projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected.Change != "api-v2" || len(projected.Files) != 1 || projected.Files[0] != "internal/api.go" {
+		t.Fatalf("projected scopes = %+v", projected)
+	}
+	appendEvent("work.finished", "finish", map[string]any{"task": "task-42"})
+	active, err = db.Active(ctx, "project")
+	if err != nil || len(active) != 0 {
+		t.Fatalf("finished active work = %+v, err=%v", active, err)
+	}
+}
+
+func TestResolveWorkCarriesIdentityAcrossChangingScopes(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	appendPayload := func(kind, key string, payload map[string]any) {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		_, _, err := db.Append(ctx, NewEvent{
+			ProjectID: "project", Actor: "agent", Session: "session", Type: kind,
+			Payload: body, Worktree: "/repo", IdempotencyKey: key,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendPayload("work.planned", "plan", map[string]any{"change": "change-c"})
+	appendPayload("work.implementing", "implement", map[string]any{
+		"work": "change:change-c", "task": "task-t", "change": "change-c",
+	})
+	work, found, err := db.ResolveWork(ctx, "project", "session", "task-t", "")
+	if err != nil || !found || work != "change:change-c" {
+		t.Fatalf("resolved work = %q found=%v err=%v", work, found, err)
+	}
+	appendPayload("work.finished", "finish", map[string]any{
+		"work": "change:change-c", "task": "task-t",
+	})
+	work, found, err = db.ResolveWork(ctx, "project", "session", "task-t", "")
+	if err != nil || !found || work != "change:change-c" {
+		t.Fatalf("resolved closed work = %q found=%v err=%v", work, found, err)
+	}
+}
+
+func TestResolveWorkRejectsAmbiguousActiveClaims(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	for i, work := range []string{"work-one", "work-two"} {
+		body, _ := json.Marshal(map[string]any{"work": work, "task": "task-t"})
+		_, _, err := db.Append(ctx, NewEvent{
+			ProjectID: "project", Actor: "agent", Session: "session", Type: "work.implementing",
+			Payload: body, Worktree: "/repo", IdempotencyKey: fmt.Sprintf("key-%d", i),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := db.ResolveWork(ctx, "project", "session", "task-t", ""); !errors.Is(err, ErrAmbiguousWork) {
+		t.Fatalf("expected ambiguous work, got %v", err)
 	}
 }

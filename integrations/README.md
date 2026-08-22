@@ -6,9 +6,10 @@ Mesij integration has three layers:
 2. **Hooks** surface relevant state at session start and before edits.
 3. **Plugins/tools** can call the JSON CLI and provide a richer UX.
 
-Keep the skill even when hooks are installed: a pre-edit hook can detect a path,
-but only the agent understands its broader task, likely files, and when work is
-actually finished.
+The skill is the primary behavioral contract: check task/change/file scopes,
+announce planning, move the same claim into implementation, communicate, and
+release. A pre-edit hook can detect a file path, but only the agent usually
+knows the task/change identifiers and whether it is planning or implementing.
 
 ## Claude Code
 
@@ -38,12 +39,15 @@ the harness's system/project instructions. A plugin can consume:
 
 ```sh
 mesij check --session "$MESIJ_SESSION" --after "$CURSOR" --json
+mesij check --task "$TASK_ID" --change "$CHANGE_ID" --file PATH --json
 ```
 
-Persist the greatest returned sequence as the next cursor. To integrate an edit
-tool, call `check --file PATH --json` before the tool executes. Avoid silently
-creating claims for every write: claims should describe a coherent task and all
-likely affected paths.
+Persist the greatest returned sequence as the next cursor. Plugins can map
+harness planning and implementation lifecycle callbacks to `mesij plan` and
+`mesij implement`. To integrate an edit tool, call `check --file PATH --json`
+before the tool executes. Avoid silently creating claims for every write:
+claims should describe a coherent work identity and all known task, change, and
+file scopes.
 
 ## Environment
 

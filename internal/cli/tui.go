@@ -120,12 +120,12 @@ func (r Runner) tui(ctx context.Context, p project.Context, args []string) int {
 
 func populateActiveTable(table *tview.Table, events []store.Event) {
 	table.Clear()
-	setHeader(table, []string{"SEQ", "ACTOR", "SESSION", "TASK", "BRANCH", "FILES", "MESSAGE"})
+	setHeader(table, []string{"SEQ", "ACTOR", "SESSION", "WORK", "TASK", "CHANGE", "PHASE", "BRANCH", "FILES", "MESSAGE"})
 	for row, event := range events {
-		var payload messagePayload
-		_ = json.Unmarshal(event.Payload, &payload)
+		payload := activePayload(event)
 		values := []string{
-			fmt.Sprint(event.Sequence), event.Actor, event.Session, payload.Task, event.Branch,
+			fmt.Sprint(event.Sequence), event.Actor, event.Session, payload.workID(), payload.Task,
+			payload.Change, lifecycleDisplayPhase(event, payload), event.Branch,
 			strings.Join(payload.Files, ", "), payload.Message,
 		}
 		setRow(table, row+1, values)
@@ -137,7 +137,7 @@ func populateActiveTable(table *tview.Table, events []store.Event) {
 
 func populateMessageTable(table *tview.Table, events []store.Event) {
 	table.Clear()
-	setHeader(table, []string{"SEQ", "TIME", "ACTOR", "SESSION", "TO", "TYPE", "TASK", "FILES", "MESSAGE"})
+	setHeader(table, []string{"SEQ", "TIME", "ACTOR", "SESSION", "TO", "TYPE", "WORK", "TASK", "CHANGE", "PHASE", "FILES", "MESSAGE"})
 	// The newest events are most useful to humans, so display them first.
 	for row, i := 0, len(events)-1; i >= 0; row, i = row+1, i-1 {
 		event := events[i]
@@ -145,7 +145,8 @@ func populateMessageTable(table *tview.Table, events []store.Event) {
 		_ = json.Unmarshal(event.Payload, &payload)
 		values := []string{
 			fmt.Sprint(event.Sequence), event.CreatedAt.Local().Format("15:04:05"), event.Actor, event.Session,
-			event.Recipient, event.Type, payload.Task, strings.Join(payload.Files, ", "), payload.Message,
+			event.Recipient, event.Type, payload.workID(), payload.Task, payload.Change,
+			lifecycleDisplayPhase(event, payload), strings.Join(payload.Files, ", "), payload.Message,
 		}
 		setRow(table, row+1, values)
 	}

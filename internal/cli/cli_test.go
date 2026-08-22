@@ -34,10 +34,27 @@ func TestNormalizeFilesUsesInvocationDirectory(t *testing.T) {
 func TestFilterActive(t *testing.T) {
 	payload, _ := json.Marshal(messagePayload{Task: "api", Files: []string{"internal/api"}})
 	events := []store.Event{{Actor: "agent", Payload: payload}}
-	if got := filterActive(events, []string{"internal/api/handler.go"}); len(got) != 1 {
+	if got := filterActive(events, coordinationQuery{Files: []string{"internal/api/handler.go"}}); len(got) != 1 {
 		t.Fatalf("expected conflict, got %+v", got)
 	}
-	if got := filterActive(events, []string{"web/app.go"}); len(got) != 0 {
+	if got := filterActive(events, coordinationQuery{Files: []string{"web/app.go"}}); len(got) != 0 {
 		t.Fatalf("expected no conflict, got %+v", got)
+	}
+}
+func TestFilterActiveByTaskChangeAndPhase(t *testing.T) {
+	plan, _ := json.Marshal(messagePayload{Work: "task:42", Task: "42", Change: "api-v2", Phase: "plan"})
+	implement, _ := json.Marshal(messagePayload{Work: "task:43", Task: "43", Change: "web-v2", Phase: "implement"})
+	events := []store.Event{
+		{Type: "work.planned", Payload: plan},
+		{Type: "work.implementing", Payload: implement},
+	}
+	if got := filterActive(events, coordinationQuery{Task: "42"}); len(got) != 1 || got[0].Type != "work.planned" {
+		t.Fatalf("task matches = %+v", got)
+	}
+	if got := filterActive(events, coordinationQuery{Change: "web-v2", Phase: "implement"}); len(got) != 1 || got[0].Type != "work.implementing" {
+		t.Fatalf("change/phase matches = %+v", got)
+	}
+	if got := filterActive(events, coordinationQuery{Task: "42", Phase: "implement"}); len(got) != 0 {
+		t.Fatalf("unexpected phase match = %+v", got)
 	}
 }

@@ -23,18 +23,22 @@ Usage:
   mesij [--db PATH] session --actor NAME
   mesij [--db PATH] post --actor NAME --session ID --type TYPE [options] [MESSAGE]
   mesij [--db PATH] reply --actor NAME --session ID --to SESSION [options] [MESSAGE]
-  mesij [--db PATH] start --actor NAME --session ID --task ID --file PATH [options]
-  mesij [--db PATH] finish --actor NAME --session ID --task ID [--message TEXT]
-  mesij [--db PATH] defer --actor NAME --session ID --task ID [--message TEXT]
-  mesij [--db PATH] check [--after SEQUENCE] [--file PATH] [options]
+  mesij [--db PATH] plan --actor NAME --session ID [targets] [options]
+  mesij [--db PATH] implement --actor NAME --session ID [targets] [options]
+  mesij [--db PATH] start --actor NAME --session ID [targets] [options]
+  mesij [--db PATH] finish --actor NAME --session ID [targets] [--message TEXT]
+  mesij [--db PATH] defer --actor NAME --session ID [targets] [--message TEXT]
+  mesij [--db PATH] check [--after SEQUENCE] [--task ID] [--change ID] [--file PATH] [options]
   mesij [--db PATH] tui
   mesij [--db PATH] status [--json]
 
 Examples:
-  mesij start --actor agent-1 --task task-42 --file internal/api.go \
-    --key task-42-start --message "Editing the API handler"
-  mesij check --file internal/api.go
-  mesij finish --actor agent-1 --task task-42 --message "Merged API changes"
+  mesij plan --task task-42 --change api-v2 --file internal/api.go \
+    --key task-42:plan --message "Planning the API change"
+  mesij check --task task-42 --change api-v2 --file internal/api.go
+  mesij implement --task task-42 --change api-v2 --file internal/api.go \
+    --key task-42:implement --message "Implementing the API handler"
+  mesij finish --task task-42 --key task-42:finish --message "Merged API changes"
   mesij check --after 12 --json
 
 A stable --key makes retries idempotent. If omitted, mesij generates a key.
@@ -85,6 +89,10 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		return r.post(ctx, p, commandArgs, "message.posted", false)
 	case "reply":
 		return r.post(ctx, p, commandArgs, "message.replied", true)
+	case "plan":
+		return r.lifecycle(ctx, p, commandArgs, "work.planned")
+	case "implement":
+		return r.lifecycle(ctx, p, commandArgs, "work.implementing")
 	case "start":
 		return r.lifecycle(ctx, p, commandArgs, "work.started")
 	case "finish":
@@ -132,7 +140,10 @@ func (s *stringList) Set(v string) error {
 }
 
 type messagePayload struct {
+	Work    string          `json:"work,omitempty"`
 	Task    string          `json:"task,omitempty"`
+	Change  string          `json:"change,omitempty"`
+	Phase   string          `json:"phase,omitempty"`
 	Message string          `json:"message,omitempty"`
 	Files   []string        `json:"files,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
@@ -191,7 +202,10 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 	typeName := fs.String("type", defaultType, "event type")
 	to := fs.String("to", "", "recipient session ID")
 	replyTo := fs.String("reply-to", "", "event ID being answered")
-	task := fs.String("task", "", "related task or work identifier")
+	work := fs.String("work", "", "work claim identifier")
+	task := fs.String("task", "", "related task identifier")
+	change := fs.String("change", "", "related change identifier")
+	phase := fs.String("phase", "", "phase such as plan or implement")
 	message := fs.String("message", "", "human-readable message")
 	key := fs.String("key", "", "stable idempotency key")
 	data := fs.String("data", "", "additional JSON value")
@@ -209,8 +223,8 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 		fmt.Fprintln(r.Stderr, "mesij reply: --to recipient session is required")
 		return 2
 	}
-	if *typeName == "work.started" || *typeName == "work.finished" || *typeName == "work.deferred" {
-		fmt.Fprintln(r.Stderr, "mesij post: lifecycle event types are reserved; use start, finish, or defer")
+	if isLifecycleType(*typeName) {
+		fmt.Fprintln(r.Stderr, "mesij post: lifecycle event types are reserved; use plan, implement, start, finish, or defer")
 		return 2
 	}
 	if *typeName == "" {
@@ -225,7 +239,7 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 		*message = strings.Join(fs.Args(), " ")
 	}
 
-	payload := messagePayload{Task: *task, Message: *message, Files: normalizeFiles(p.Root, p.Invocation, files)}
+	payload := messagePayload{Work: *work, Task: *task, Change: *change, Phase: *phase, Message: *message, Files: normalizeFiles(p.Root, p.Invocation, files)}
 	if *data != "" {
 		if !json.Valid([]byte(*data)) {
 			fmt.Fprintln(r.Stderr, "mesij post: --data must be valid JSON")
@@ -264,12 +278,14 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 }
 
 func (r Runner) lifecycle(ctx context.Context, p project.Context, args []string, eventType string) int {
-	name := strings.TrimPrefix(eventType, "work.")
+	name := lifecycleCommand(eventType)
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(r.Stderr)
 	actor := fs.String("actor", os.Getenv("MESIJ_ACTOR"), "actor name (or MESIJ_ACTOR)")
 	session := fs.String("session", os.Getenv("MESIJ_SESSION"), "agent session ID (or MESIJ_SESSION)")
-	task := fs.String("task", "", "stable task or work identifier")
+	work := fs.String("work", "", "stable work claim identifier")
+	task := fs.String("task", "", "related task identifier")
+	change := fs.String("change", "", "related change identifier")
 	message := fs.String("message", "", "human-readable message")
 	key := fs.String("key", "", "stable idempotency key")
 	jsonOutput := fs.Bool("json", false, "write event as JSON")
@@ -278,8 +294,8 @@ func (r Runner) lifecycle(ctx context.Context, p project.Context, args []string,
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *actor == "" || *session == "" || *task == "" {
-		fmt.Fprintf(r.Stderr, "mesij %s: --actor, --session, and --task are required\n", name)
+	if *actor == "" || *session == "" {
+		fmt.Fprintf(r.Stderr, "mesij %s: --actor and --session are required\n", name)
 		return 2
 	}
 	if fs.NArg() > 0 {
@@ -289,16 +305,76 @@ func (r Runner) lifecycle(ctx context.Context, p project.Context, args []string,
 		}
 		*message = strings.Join(fs.Args(), " ")
 	}
-	if eventType == "work.started" && len(files) == 0 {
-		fmt.Fprintln(r.Stderr, "mesij start: at least one --file is required to make conflicts visible")
+	normalizedFiles := normalizeFiles(p.Root, p.Invocation, files)
+	explicitWork := *work != ""
+	defaultWork := ""
+	switch {
+	case *task != "":
+		defaultWork = "task:" + *task
+	case *change != "":
+		defaultWork = "change:" + *change
+	}
+	if *work == "" && defaultWork == "" {
+		fmt.Fprintf(r.Stderr, "mesij %s: provide --work, --task, or --change\n", name)
 		return 2
 	}
-	payloadJSON, _ := json.Marshal(messagePayload{Task: *task, Message: *message, Files: normalizeFiles(p.Root, p.Invocation, files)})
+	if isActiveLifecycle(eventType) && *task == "" && *change == "" && len(normalizedFiles) == 0 {
+		fmt.Fprintf(r.Stderr, "mesij %s: claim at least one --task, --change, or --file target\n", name)
+		return 2
+	}
+
 	db, err := store.Open(ctx, p.Database)
 	if err != nil {
 		return r.fail(err)
 	}
 	defer db.Close()
+	retryFound := false
+	var retryPayload messagePayload
+	if *key != "" {
+		existing, found, err := db.FindByKey(ctx, p.ID, *session, *key)
+		if err != nil {
+			return r.fail(err)
+		}
+		if found && json.Unmarshal(existing.Payload, &retryPayload) == nil {
+			retryFound = true
+		}
+	}
+	if retryFound && !explicitWork {
+		*work = retryPayload.workID()
+	} else if !explicitWork {
+		resolved, found, err := db.ResolveWork(ctx, p.ID, *session, *task, *change)
+		if err != nil {
+			if errors.Is(err, store.ErrAmbiguousWork) {
+				fmt.Fprintf(r.Stderr, "mesij %s: targets map to multiple active work identities; pass --work explicitly\n", name)
+				return 2
+			}
+			return r.fail(err)
+		}
+		if found {
+			*work = resolved
+		} else {
+			*work = defaultWork
+		}
+	}
+
+	payloadWork := ""
+	if retryFound && !explicitWork {
+		payloadWork = retryPayload.Work
+	} else if explicitWork || *work != defaultWork {
+		payloadWork = *work
+	}
+	payloadPhase := lifecyclePhase(eventType)
+	if retryFound {
+		payloadPhase = retryPayload.Phase
+	} else if eventType == "work.started" {
+		// Keep the legacy start payload stable for idempotent retries. Its phase
+		// is inferred as implement by projections and displays.
+		payloadPhase = ""
+	}
+	payloadJSON, _ := json.Marshal(messagePayload{
+		Work: payloadWork, Task: *task, Change: *change, Phase: payloadPhase,
+		Message: *message, Files: normalizedFiles,
+	})
 	event, inserted, err := db.Append(ctx, store.NewEvent{
 		ProjectID: p.ID, Actor: *actor, Session: *session, Type: eventType, Payload: payloadJSON,
 		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: *key,
@@ -316,8 +392,56 @@ func (r Runner) lifecycle(ctx context.Context, p project.Context, args []string,
 	if !inserted {
 		state = "already posted"
 	}
-	fmt.Fprintf(r.Stdout, "%s %s for task %s as event %d, key=%s\n", state, eventType, *task, event.Sequence, event.IdempotencyKey)
+	fmt.Fprintf(r.Stdout, "%s %s for work %s as event %d, key=%s\n", state, eventType, *work, event.Sequence, event.IdempotencyKey)
 	return 0
+}
+
+func lifecycleCommand(eventType string) string {
+	switch eventType {
+	case "work.planned":
+		return "plan"
+	case "work.implementing":
+		return "implement"
+	case "work.started":
+		return "start"
+	case "work.finished":
+		return "finish"
+	case "work.deferred":
+		return "defer"
+	default:
+		return strings.TrimPrefix(eventType, "work.")
+	}
+}
+
+func lifecyclePhase(eventType string) string {
+	switch eventType {
+	case "work.planned":
+		return "plan"
+	case "work.implementing", "work.started":
+		return "implement"
+	default:
+		return ""
+	}
+}
+
+func isLifecycleType(eventType string) bool {
+	switch eventType {
+	case "work.planned", "work.implementing", "work.started", "work.finished", "work.deferred":
+		return true
+	default:
+		return false
+	}
+}
+
+func isActiveLifecycle(eventType string) bool {
+	return eventType == "work.planned" || eventType == "work.implementing" || eventType == "work.started"
+}
+
+func lifecycleDisplayPhase(event store.Event, payload messagePayload) string {
+	if payload.Phase != "" {
+		return payload.Phase
+	}
+	return lifecyclePhase(event.Type)
 }
 
 func normalizeFiles(root, invocation string, files []string) []string {
@@ -345,6 +469,9 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 	actor := fs.String("from", "", "filter messages by actor")
 	typeName := fs.String("type", "", "filter messages by event type")
 	forSession := fs.String("session", os.Getenv("MESIJ_SESSION"), "include broadcasts and direct messages for this session")
+	proposedTask := fs.String("task", "", "proposed task identifier")
+	proposedChange := fs.String("change", "", "proposed change identifier")
+	proposedPhase := fs.String("phase", "", "filter active work by phase: plan or implement")
 	jsonOutput := fs.Bool("json", false, "write one JSON coordination report")
 	var files stringList
 	fs.Var(&files, "file", "proposed file or directory; report overlapping active work (repeatable)")
@@ -357,6 +484,10 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 			afterSet = true
 		}
 	})
+	if *proposedPhase != "" && *proposedPhase != "plan" && *proposedPhase != "implement" {
+		fmt.Fprintln(r.Stderr, "mesij check: --phase must be plan or implement")
+		return 2
+	}
 	if fs.NArg() != 0 || *after < 0 || *limit < 1 {
 		fmt.Fprintln(r.Stderr, "mesij check: invalid arguments")
 		return 2
@@ -370,22 +501,26 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 	if err != nil {
 		return r.fail(err)
 	}
-	requested := normalizeFiles(p.Root, p.Invocation, files)
-	relevant := filterActive(active, requested)
+	proposed := coordinationQuery{
+		Task: *proposedTask, Change: *proposedChange, Phase: *proposedPhase,
+		Files: normalizeFiles(p.Root, p.Invocation, files),
+	}
+	relevant := filterActive(active, proposed)
 	events, err := db.List(ctx, store.Query{ProjectID: p.ID, After: *after, Limit: *limit, Actor: *actor, Type: *typeName, ForSession: *forSession, Latest: !afterSet})
 	if err != nil {
 		return r.fail(err)
 	}
 	if *jsonOutput {
 		return r.writeJSON(struct {
-			Proposed []string      `json:"proposed_files,omitempty"`
-			Active   []store.Event `json:"active_work"`
-			Messages []store.Event `json:"messages"`
-		}{requested, relevant, events})
+			Proposed      coordinationQuery `json:"proposed"`
+			ProposedFiles []string          `json:"proposed_files"`
+			Active        []store.Event     `json:"active_work"`
+			Messages      []store.Event     `json:"messages"`
+		}{proposed, proposed.Files, relevant, events})
 	}
 
-	if len(requested) > 0 {
-		fmt.Fprintf(r.Stdout, "Potential conflicts for %s:\n", strings.Join(requested, ", "))
+	if proposed.hasTargets() {
+		fmt.Fprintf(r.Stdout, "Potential conflicts for %s:\n", proposed.String())
 	} else {
 		fmt.Fprintln(r.Stdout, "Active work:")
 	}
@@ -393,9 +528,18 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 		fmt.Fprintln(r.Stdout, "  none")
 	}
 	for _, event := range relevant {
-		var payload messagePayload
-		_ = json.Unmarshal(event.Payload, &payload)
-		fmt.Fprintf(r.Stdout, "  ! %s (%s) / %s on %s", event.Actor, event.Session, payload.Task, strings.Join(payload.Files, ", "))
+		payload := activePayload(event)
+		phase := lifecycleDisplayPhase(event, payload)
+		fmt.Fprintf(r.Stdout, "  ! %s (%s) / %s phase=%s", event.Actor, event.Session, payload.workID(), phase)
+		if payload.Task != "" {
+			fmt.Fprintf(r.Stdout, " task=%s", payload.Task)
+		}
+		if payload.Change != "" {
+			fmt.Fprintf(r.Stdout, " change=%s", payload.Change)
+		}
+		if len(payload.Files) > 0 {
+			fmt.Fprintf(r.Stdout, " files=%s", strings.Join(payload.Files, ", "))
+		}
 		if payload.Message != "" {
 			fmt.Fprintf(r.Stdout, " — %s", payload.Message)
 		}
@@ -412,20 +556,79 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 	return 0
 }
 
-func filterActive(events []store.Event, proposed []string) []store.Event {
-	if len(proposed) == 0 {
+type coordinationQuery struct {
+	Task   string   `json:"task,omitempty"`
+	Change string   `json:"change,omitempty"`
+	Phase  string   `json:"phase,omitempty"`
+	Files  []string `json:"files,omitempty"`
+}
+
+func (q coordinationQuery) hasTargets() bool {
+	return q.Task != "" || q.Change != "" || q.Phase != "" || len(q.Files) > 0
+}
+
+func (q coordinationQuery) String() string {
+	var parts []string
+	if q.Task != "" {
+		parts = append(parts, "task="+q.Task)
+	}
+	if q.Change != "" {
+		parts = append(parts, "change="+q.Change)
+	}
+	if q.Phase != "" {
+		parts = append(parts, "phase="+q.Phase)
+	}
+	if len(q.Files) > 0 {
+		parts = append(parts, "files="+strings.Join(q.Files, ","))
+	}
+	return strings.Join(parts, " ")
+}
+
+func (p messagePayload) workID() string {
+	if p.Work != "" {
+		return p.Work
+	}
+	if p.Task != "" {
+		return "task:" + p.Task
+	}
+	if p.Change != "" {
+		return "change:" + p.Change
+	}
+	return "unknown"
+}
+
+func activePayload(event store.Event) messagePayload {
+	var payload messagePayload
+	raw := event.Projection
+	if len(raw) == 0 {
+		raw = event.Payload
+	}
+	_ = json.Unmarshal(raw, &payload)
+	return payload
+}
+
+func filterActive(events []store.Event, proposed coordinationQuery) []store.Event {
+	if !proposed.hasTargets() {
 		return events
 	}
-	var matches []store.Event
+	matches := make([]store.Event, 0)
 	for _, event := range events {
-		var payload messagePayload
-		if json.Unmarshal(event.Payload, &payload) != nil {
+		payload := activePayload(event)
+		phase := lifecycleDisplayPhase(event, payload)
+		if proposed.Phase != "" && proposed.Phase != phase {
 			continue
 		}
-		matched := false
-		for _, a := range payload.Files {
-			for _, b := range proposed {
-				if pathsOverlap(a, b) {
+		targeted := proposed.Task != "" || proposed.Change != "" || len(proposed.Files) > 0
+		matched := !targeted
+		if proposed.Task != "" && proposed.Task == payload.Task {
+			matched = true
+		}
+		if proposed.Change != "" && proposed.Change == payload.Change {
+			matched = true
+		}
+		for _, activeFile := range payload.Files {
+			for _, proposedFile := range proposed.Files {
+				if pathsOverlap(activeFile, proposedFile) {
 					matched = true
 					break
 				}
@@ -462,8 +665,17 @@ func writeEvent(w io.Writer, event store.Event) {
 		fmt.Fprintf(w, "  reply:%s", event.ReplyTo)
 	}
 	fmt.Fprintln(w)
+	if payload.Work != "" {
+		fmt.Fprintf(w, "    work: %s\n", payload.Work)
+	}
 	if payload.Task != "" {
 		fmt.Fprintf(w, "    task: %s\n", payload.Task)
+	}
+	if payload.Change != "" {
+		fmt.Fprintf(w, "    change: %s\n", payload.Change)
+	}
+	if phase := lifecycleDisplayPhase(event, payload); phase != "" {
+		fmt.Fprintf(w, "    phase: %s\n", phase)
 	}
 	if payload.Message != "" {
 		fmt.Fprintf(w, "    %s\n", payload.Message)

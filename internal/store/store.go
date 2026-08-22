@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 var ErrIdempotencyConflict = errors.New("idempotency key was already used for different event data")
+var ErrAmbiguousWork = errors.New("task and change refer to different work identities")
 
 type Event struct {
 	Sequence       int64           `json:"sequence"`
@@ -27,6 +29,7 @@ type Event struct {
 	ReplyTo        string          `json:"reply_to,omitempty"`
 	Type           string          `json:"type"`
 	Payload        json.RawMessage `json:"payload"`
+	Projection     json.RawMessage `json:"projection,omitempty"`
 	Worktree       string          `json:"worktree"`
 	Branch         string          `json:"branch,omitempty"`
 	Commit         string          `json:"commit,omitempty"`
@@ -240,6 +243,14 @@ WHERE k.project_id = ? AND k.session_id = ? AND k.key = ?`, projectID, session, 
 	return scanEvent(row)
 }
 
+func (d *DB) FindByKey(ctx context.Context, projectID, session, key string) (Event, bool, error) {
+	event, err := d.byKey(ctx, projectID, session, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	return event, err == nil, err
+}
+
 func (d *DB) List(ctx context.Context, q Query) ([]Event, error) {
 	if q.Limit <= 0 {
 		q.Limit = 100
@@ -266,7 +277,7 @@ WHERE project_id = ? AND sequence > ?
 		return nil, err
 	}
 	defer rows.Close()
-	var events []Event
+	events := make([]Event, 0)
 	for rows.Next() {
 		e, err := scanEvent(rows)
 		if err != nil {
@@ -277,39 +288,199 @@ WHERE project_id = ? AND sequence > ?
 	return events, rows.Err()
 }
 
+func (d *DB) ResolveWork(ctx context.Context, projectID, session, task, change string) (string, bool, error) {
+	if task == "" && change == "" {
+		return "", false, nil
+	}
+	active, err := d.Active(ctx, projectID)
+	if err != nil {
+		return "", false, err
+	}
+	candidates := make(map[string]bool)
+	for _, event := range active {
+		if event.Session != session {
+			continue
+		}
+		raw := event.Projection
+		if len(raw) == 0 {
+			raw = event.Payload
+		}
+		var payload projectionPayload
+		if json.Unmarshal(raw, &payload) != nil {
+			continue
+		}
+		if (task != "" && payload.Task == task) || (change != "" && payload.Change == change) {
+			candidates[payload.workID()] = true
+		}
+	}
+	if len(candidates) > 1 {
+		return "", false, ErrAmbiguousWork
+	}
+	for work := range candidates {
+		return work, true, nil
+	}
+
+	rows, err := d.db.QueryContext(ctx, `
+SELECT payload
+FROM events
+WHERE project_id = ? AND session_id = ?
+  AND event_type IN ('work.planned', 'work.implementing', 'work.started', 'work.finished', 'work.deferred')
+ORDER BY sequence DESC`, projectID, session)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	var taskWork, changeWork string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return "", false, err
+		}
+		var payload projectionPayload
+		if json.Unmarshal([]byte(raw), &payload) != nil {
+			continue
+		}
+		work := payload.workID()
+		if work == "" {
+			continue
+		}
+		if taskWork == "" && task != "" && payload.Task == task {
+			taskWork = work
+		}
+		if changeWork == "" && change != "" && payload.Change == change {
+			changeWork = work
+		}
+		if (task == "" || taskWork != "") && (change == "" || changeWork != "") {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, err
+	}
+	if taskWork != "" && changeWork != "" && taskWork != changeWork {
+		return "", false, ErrAmbiguousWork
+	}
+	if taskWork != "" {
+		return taskWork, true, nil
+	}
+	if changeWork != "" {
+		return changeWork, true, nil
+	}
+	return "", false, nil
+}
+
 func (d *DB) Active(ctx context.Context, projectID string) ([]Event, error) {
 	rows, err := d.db.QueryContext(ctx, `
-WITH lifecycle AS (
-    SELECT sequence, id, project_id, actor, session_id, recipient_session, reply_to, event_type,
-           payload, worktree, branch, commit_sha, idempotency_key, created_at,
-           row_number() OVER (
-               PARTITION BY project_id, session_id, json_extract(payload, '$.task')
-               ORDER BY sequence DESC
-           ) AS rank
-    FROM events
-    WHERE project_id = ?
-      AND event_type IN ('work.started', 'work.finished', 'work.deferred')
-      AND json_extract(payload, '$.task') IS NOT NULL
-      AND json_extract(payload, '$.task') != ''
-)
 SELECT sequence, id, project_id, actor, session_id, recipient_session, reply_to, event_type,
        payload, worktree, branch, commit_sha, idempotency_key, created_at
-FROM lifecycle
-WHERE rank = 1 AND event_type = 'work.started'
+FROM events
+WHERE project_id = ?
+  AND event_type IN ('work.planned', 'work.implementing', 'work.started', 'work.finished', 'work.deferred')
 ORDER BY sequence ASC`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var events []Event
+
+	active := make(map[string]Event)
 	for rows.Next() {
-		e, err := scanEvent(rows)
+		event, err := scanEvent(rows)
 		if err != nil {
 			return nil, err
 		}
-		events = append(events, e)
+		var current projectionPayload
+		if err := json.Unmarshal(event.Payload, &current); err != nil {
+			continue
+		}
+		if current.Phase == "" {
+			switch event.Type {
+			case "work.planned":
+				current.Phase = "plan"
+			case "work.implementing", "work.started":
+				current.Phase = "implement"
+			}
+		}
+		work := current.workID()
+		if work == "" {
+			continue
+		}
+		key := event.Session + "\x00" + work
+		switch event.Type {
+		case "work.finished", "work.deferred":
+			delete(active, key)
+		default:
+			if previous, ok := active[key]; ok {
+				var prior projectionPayload
+				priorJSON := previous.Projection
+				if len(priorJSON) == 0 {
+					priorJSON = previous.Payload
+				}
+				if json.Unmarshal(priorJSON, &prior) == nil {
+					current = mergeProjection(prior, current)
+				}
+			}
+			event.Projection, _ = json.Marshal(current)
+			active[key] = event
+		}
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	events := make([]Event, 0, len(active))
+	for _, event := range active {
+		events = append(events, event)
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].Sequence < events[j].Sequence })
+	return events, nil
+}
+
+type projectionPayload struct {
+	Work    string          `json:"work,omitempty"`
+	Task    string          `json:"task,omitempty"`
+	Change  string          `json:"change,omitempty"`
+	Phase   string          `json:"phase,omitempty"`
+	Message string          `json:"message,omitempty"`
+	Files   []string        `json:"files,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (p projectionPayload) workID() string {
+	if p.Work != "" {
+		return p.Work
+	}
+	if p.Task != "" {
+		return "task:" + p.Task
+	}
+	if p.Change != "" {
+		return "change:" + p.Change
+	}
+	return ""
+}
+
+func mergeProjection(prior, current projectionPayload) projectionPayload {
+	if current.Work == "" {
+		current.Work = prior.Work
+	}
+	if current.Task == "" {
+		current.Task = prior.Task
+	}
+	if current.Change == "" {
+		current.Change = prior.Change
+	}
+	if current.Phase == "" {
+		current.Phase = prior.Phase
+	}
+	seen := make(map[string]bool, len(prior.Files)+len(current.Files))
+	files := make([]string, 0, len(prior.Files)+len(current.Files))
+	for _, file := range append(prior.Files, current.Files...) {
+		if !seen[file] {
+			seen[file] = true
+			files = append(files, file)
+		}
+	}
+	current.Files = files
+	return current
 }
 
 type scanner interface{ Scan(dest ...any) error }

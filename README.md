@@ -12,8 +12,12 @@ session.
 - **Named projects:** `--project NAME` (or `MESIJ_PROJECT`) creates an independent
   event stream in the shared database. It defaults to the repository directory.
 - **Actor sessions:** every event records both a readable actor and a session ID.
-- **Event-sourced:** active work is projected from `work.started`,
-  `work.finished`, and `work.deferred` events; it is not mutable state.
+- **Event-sourced:** active work is projected from `work.planned`,
+  `work.implementing`/`work.started`, `work.finished`, and `work.deferred`
+  events; it is not mutable state.
+- **Multi-scope coordination:** claims can refer to tasks, changes, files, or any
+  combination. Conflict checks understand exact task/change matches and
+  overlapping file paths.
 - **Immutable:** SQLite triggers reject updates and deletes.
 - **Idempotent:** `(project, session, key)` is unique. Retrying identical data
   returns the original event; reusing a key with different data fails.
@@ -38,17 +42,25 @@ Global flags such as `--project` and `--db` go before the command.
 # Open one session and retain the printed environment variables.
 eval "$(mesij --project payments session --actor agent-blue)"
 
-# Check active claims and recent messages before deciding to edit.
+# Check task, change, and file scopes before deciding what to do.
 mesij --project payments check \
   --session "$MESIJ_SESSION" \
+  --task pay-142 --change capture-v2 \
   --file internal/payments --file migrations
 
-# Claim intended work. Stable keys make retries safe.
-mesij --project payments start \
-  --task pay-142 \
+# Announce planning work. Stable keys make retries safe.
+mesij --project payments plan \
+  --task pay-142 --change capture-v2 \
   --file internal/payments --file migrations/0142.sql \
-  --key pay-142:start \
-  --message "Add idempotent capture endpoint"
+  --key pay-142:plan \
+  --message "Planning an idempotent capture endpoint"
+
+# Move the same work claim into implementation.
+mesij --project payments implement \
+  --task pay-142 --change capture-v2 \
+  --file internal/payments --file migrations/0142.sql \
+  --key pay-142:implement \
+  --message "Implementing the agreed plan"
 
 # Publish useful progress or a decision.
 mesij --project payments post \
@@ -69,25 +81,37 @@ mesij --project payments finish \
 ```
 
 `MESIJ_ACTOR`, `MESIJ_SESSION`, `MESIJ_PROJECT`, and `MESIJ_DB` can replace their
-corresponding flags. `post`, `start`, `finish`, `defer`, and `reply` require a
-session.
+corresponding flags. `post`, `plan`, `implement`, `start`, `finish`, `defer`,
+and `reply` require a session.
 
 ## Commands
 
 - `init` — initialize the project database.
 - `session` — create and announce an agent session; emits shell exports.
-- `check` — show active work, potential path conflicts, and messages.
-- `start` — append a `work.started` claim for a task and paths.
-- `finish` / `defer` — close a task claim through another immutable event.
+- `check` — show active work and conflicts by task, change, phase, or file path.
+- `plan` — append a `work.planned` claim.
+- `implement` — append a `work.implementing` claim for the same work identity.
+- `start` — legacy/general active claim using `work.started`; treated as implement.
+- `finish` / `defer` — close a work claim through another immutable event.
 - `post` — append an arbitrary typed message.
 - `reply` — append a message addressed to a session.
 - `status` — show project, worktree, branch, commit, and database identity.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
   `r` to refresh, and `q` or `Esc` to quit.
 
+Lifecycle commands accept `--work`, `--task`, `--change`, and repeatable
+`--file`. The work identity defaults to `task:TASK` or `change:CHANGE`; use an
+explicit `--work` when neither is present. Reusing the same identity moves one
+claim from plan to implement to finished/deferred. Known task/change/file scopes
+are carried forward conservatively, so an implementation event does not need to
+repeat every file named during planning. If task/change identities are ambiguous,
+mesij asks for an explicit `--work`.
+
 Use `--json` with session, post, lifecycle, status, or check commands for agent
 integration. `check --json` returns one coordination report containing
-`active_work` and `messages`. Supplying `check --session ID` includes broadcasts
+`active_work` and `messages`. Active entries keep the immutable stored `payload`
+and may include a derived `projection` containing scopes carried forward from
+prior lifecycle events. Supplying `check --session ID` includes broadcasts
 and messages addressed to that session; omitting it displays the complete log.
 
 ## Harness integrations
