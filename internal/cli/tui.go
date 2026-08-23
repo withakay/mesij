@@ -40,7 +40,8 @@ func (r Runner) tui(ctx context.Context, p project.Context, args []string) int {
 	messageTable := tview.NewTable().SetFixed(1, 0).SetSelectable(true, false)
 	messageTable.SetBorder(true).SetTitle(" Event log ")
 	footer := tview.NewTextView().SetTextAlign(tview.AlignCenter)
-	footer.SetText("q/Esc quit  •  r refresh  •  Tab switch pane  •  auto-refresh " + refresh.String())
+	footerText := "q/Esc quit  •  r refresh  •  Tab switch pane  •  auto-refresh " + refresh.String()
+	footer.SetText(footerText)
 
 	flex := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(activeTable, 0, 2, true).
@@ -58,6 +59,7 @@ func (r Runner) tui(ctx context.Context, p project.Context, args []string) int {
 		}
 		populateActiveTable(activeTable, active)
 		populateMessageTable(messageTable, events)
+		footer.SetText(footerText + "  •  updated " + time.Now().Format("15:04:05"))
 		return nil
 	}
 	if err := load(); err != nil {
@@ -120,12 +122,12 @@ func (r Runner) tui(ctx context.Context, p project.Context, args []string) int {
 
 func populateActiveTable(table *tview.Table, events []store.Event) {
 	table.Clear()
-	setHeader(table, []string{"SEQ", "ACTOR", "SESSION", "WORK", "TASK", "CHANGE", "PHASE", "BRANCH", "FILES", "MESSAGE"})
+	setHeader(table, []string{"SEQ", "ACTOR", "SESSION", "WORK", "TASK", "CHANGE", "PHASE", "WORKTREE", "BRANCH", "COMMIT", "FILES", "MESSAGE"})
 	for row, event := range events {
 		payload := activePayload(event)
 		values := []string{
 			fmt.Sprint(event.Sequence), event.Actor, event.Session, payload.workID(), payload.Task,
-			payload.Change, lifecycleDisplayPhase(event, payload), event.Branch,
+			payload.Change, lifecycleDisplayPhase(event, payload), event.Worktree, event.Branch, event.Commit,
 			strings.Join(payload.Files, ", "), payload.Message,
 		}
 		setRow(table, row+1, values)
@@ -137,16 +139,17 @@ func populateActiveTable(table *tview.Table, events []store.Event) {
 
 func populateMessageTable(table *tview.Table, events []store.Event) {
 	table.Clear()
-	setHeader(table, []string{"SEQ", "TIME", "ACTOR", "SESSION", "TO", "TYPE", "WORK", "TASK", "CHANGE", "PHASE", "FILES", "MESSAGE"})
+	setHeader(table, []string{"SEQ", "ID", "TIME", "ACTOR", "SESSION", "TO", "REPLY", "TYPE", "WORK", "TASK", "CHANGE", "PHASE", "WORKTREE", "BRANCH", "COMMIT", "FILES", "MESSAGE"})
 	// The newest events are most useful to humans, so display them first.
 	for row, i := 0, len(events)-1; i >= 0; row, i = row+1, i-1 {
 		event := events[i]
 		var payload messagePayload
 		_ = json.Unmarshal(event.Payload, &payload)
 		values := []string{
-			fmt.Sprint(event.Sequence), event.CreatedAt.Local().Format("15:04:05"), event.Actor, event.Session,
-			event.Recipient, event.Type, payload.workID(), payload.Task, payload.Change,
-			lifecycleDisplayPhase(event, payload), strings.Join(payload.Files, ", "), payload.Message,
+			fmt.Sprint(event.Sequence), event.ID, event.CreatedAt.Local().Format("15:04:05"), event.Actor, event.Session,
+			event.Recipient, event.ReplyTo, event.Type, payload.workID(), payload.Task, payload.Change,
+			lifecycleDisplayPhase(event, payload), event.Worktree, event.Branch, event.Commit,
+			strings.Join(payload.Files, ", "), payload.Message,
 		}
 		setRow(table, row+1, values)
 	}

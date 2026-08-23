@@ -3,21 +3,25 @@ package project
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
-// Context describes the Git project and the current worktree. The database is
-// stored below Git's common directory so all linked worktrees see one log.
+const markerName = ".mesij-project"
+
+// Context describes the project and current worktree. Default databases live
+// outside repositories and are keyed by one canonical project locator.
 type Context struct {
 	Name       string `json:"name"`
 	ID         string `json:"id"`
 	Root       string `json:"root"`
-	CommonDir  string `json:"common_dir"`
+	CommonDir  string `json:"common_dir,omitempty"`
 	Database   string `json:"database"`
 	Invocation string `json:"invocation_dir"`
 	Worktree   string `json:"worktree"`
@@ -25,88 +29,217 @@ type Context struct {
 	Commit     string `json:"commit,omitempty"`
 }
 
-func Discover(dir, databaseOverride, projectName string) (Context, error) {
+type marker struct {
+	Name string `json:"name"`
+}
+
+func Discover(dir, databaseOverride, projectSelector string) (Context, error) {
 	if dir == "" {
 		var err error
 		dir, err = os.Getwd()
 		if err != nil {
-			return Context{}, err
+			return Context{}, fmt.Errorf("get working directory: %w", err)
+		}
+	}
+	invocation, err := CanonicalPath(dir)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve invocation directory: %w", err)
+	}
+
+	if projectSelector == "" {
+		projectSelector = os.Getenv("MESIJ_PROJECT")
+	}
+	projectDir := invocation
+	projectName := projectSelector
+	pathSelected := false
+	switch {
+	case strings.HasPrefix(projectSelector, "name:"):
+		projectName = strings.TrimPrefix(projectSelector, "name:")
+	case strings.HasPrefix(projectSelector, "path:"):
+		pathSelected = true
+		projectName = ""
+		projectDir, err = CanonicalPath(resolveFrom(invocation, strings.TrimPrefix(projectSelector, "path:")))
+		if err != nil {
+			return Context{}, fmt.Errorf("resolve project path: %w", err)
+		}
+		info, statErr := os.Stat(projectDir)
+		if statErr != nil || !info.IsDir() {
+			return Context{}, fmt.Errorf("project path %q is not a directory", projectDir)
 		}
 	}
 
-	dir, _ = filepath.Abs(dir)
-	root, err := git(dir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return discoverWithoutGit(dir, databaseOverride, projectName)
+	database := databaseOverride
+	if database == "" {
+		database = os.Getenv("MESIJ_DB")
 	}
-	root, _ = filepath.Abs(root)
+	if database != "" {
+		database, err = CanonicalPath(resolveFrom(invocation, database))
+		if err != nil {
+			return Context{}, fmt.Errorf("resolve database path: %w", err)
+		}
+	}
+	databaseExplicit := database != ""
 
-	common, err := git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	root, gitErr := git(projectDir, "rev-parse", "--show-toplevel")
+	if gitErr == nil {
+		return discoverGit(invocation, projectDir, root, database, projectName, databaseExplicit)
+	}
+	return discoverPath(invocation, projectDir, database, projectName, pathSelected, databaseExplicit)
+}
+
+func discoverGit(invocation, projectDir, root, database, projectName string, databaseExplicit bool) (Context, error) {
+	root, err := CanonicalPath(root)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve Git root: %w", err)
+	}
+	common, err := git(projectDir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return Context{}, fmt.Errorf("locate Git common directory: %w", err)
 	}
-	common, _ = filepath.Abs(common)
-
-	branch, _ := git(dir, "symbolic-ref", "--quiet", "--short", "HEAD")
-	commit, _ := git(dir, "rev-parse", "--verify", "HEAD")
-
-	database := databaseOverride
-	if database == "" {
-		database = os.Getenv("MESIJ_DB")
+	common, err = CanonicalPath(common)
+	if err != nil {
+		return Context{}, fmt.Errorf("resolve Git common directory: %w", err)
 	}
-	if database == "" {
-		database = filepath.Join(common, "mesij", "events.sqlite3")
-	} else {
-		database, _ = filepath.Abs(database)
-	}
-
-	if projectName == "" {
-		projectName = os.Getenv("MESIJ_PROJECT")
-	}
+	branch, _ := git(projectDir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	commit, _ := git(projectDir, "rev-parse", "--verify", "HEAD")
 	if projectName == "" {
 		projectName = defaultProjectName(common, root)
 	}
-	if strings.TrimSpace(projectName) == "" {
+	if database == "" {
+		legacy := filepath.Join(common, "mesij", "events.sqlite3")
+		if _, err := os.Stat(legacy); err == nil {
+			database = legacy
+		}
+	}
+	return makeContext(invocation, root, common, database, projectName, common, branch, commit, databaseExplicit)
+}
+
+func discoverPath(invocation, projectDir, database, projectName string, pathSelected, databaseExplicit bool) (Context, error) {
+	root := projectDir
+	markerName := ""
+	if !pathSelected {
+		if markerRoot, name, ok := findMarker(projectDir); ok {
+			root, markerName = markerRoot, name
+		}
+	}
+	if projectName == "" {
+		if markerName != "" && !pathSelected {
+			projectName = markerName
+		} else {
+			projectName = filepath.Base(root)
+		}
+	}
+	return makeContext(invocation, root, "", database, projectName, root, "", "", databaseExplicit)
+}
+
+func makeContext(invocation, root, common, database, name, locator, branch, commit string, databaseExplicit bool) (Context, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
 		return Context{}, errors.New("project name cannot be empty")
 	}
-
-	sum := sha256.Sum256([]byte(common + "\x00" + projectName))
+	if databaseExplicit {
+		locator = database
+	}
+	sum := sha256.Sum256([]byte(locator + "\x00" + name))
+	id := hex.EncodeToString(sum[:16])
+	if database == "" {
+		home, err := dataHome()
+		if err != nil {
+			return Context{}, err
+		}
+		database = filepath.Join(home, "projects", sanitize(name)+"-"+id+".sqlite3")
+	}
 	return Context{
-		Name:       projectName,
-		ID:         hex.EncodeToString(sum[:16]),
-		Root:       root,
-		CommonDir:  common,
-		Database:   database,
-		Invocation: dir,
-		Worktree:   root,
-		Branch:     branch,
-		Commit:     commit,
+		Name: name, ID: id, Root: root, CommonDir: common, Database: database,
+		Invocation: invocation, Worktree: root, Branch: branch, Commit: commit,
 	}, nil
 }
 
-func discoverWithoutGit(dir, databaseOverride, projectName string) (Context, error) {
-	database := databaseOverride
-	if database == "" {
-		database = os.Getenv("MESIJ_DB")
+// Init writes a marker that lets nested non-Git paths resolve one project.
+// Git projects already have a stable common-directory identity.
+func Init(path, name string) error {
+	root, err := CanonicalPath(path)
+	if err != nil {
+		return fmt.Errorf("resolve project path: %w", err)
 	}
-	if database == "" {
-		return Context{}, errors.New("mesij must be run inside a Git worktree unless --db or MESIJ_DB is set")
+	if _, err := git(root, "rev-parse", "--git-common-dir"); err == nil {
+		return nil
 	}
-	database, _ = filepath.Abs(database)
-	if projectName == "" {
-		projectName = os.Getenv("MESIJ_PROJECT")
+	if name == "" {
+		name = filepath.Base(root)
 	}
-	if projectName == "" {
-		projectName = filepath.Base(dir)
+	data, err := json.MarshalIndent(marker{Name: name}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode project marker: %w", err)
 	}
-	if strings.TrimSpace(projectName) == "" {
-		return Context{}, errors.New("project name cannot be empty")
+	if err := os.WriteFile(filepath.Join(root, markerName), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write project marker: %w", err)
 	}
-	sum := sha256.Sum256([]byte(database + "\x00" + projectName))
-	return Context{
-		Name: projectName, ID: hex.EncodeToString(sum[:16]), Root: dir, Database: database,
-		Invocation: dir, Worktree: dir,
-	}, nil
+	return nil
+}
+
+// CanonicalPath resolves symlinks through the longest existing parent. This
+// also canonicalizes planned files that do not exist yet.
+func CanonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	current := abs
+	var suffix []string
+	for {
+		resolved, evalErr := filepath.EvalSymlinks(current)
+		if evalErr == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return abs, nil
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func dataHome() (string, error) {
+	if home := os.Getenv("MESIJ_HOME"); home != "" {
+		return CanonicalPath(home)
+	}
+	if runtime.GOOS == "linux" {
+		if home := os.Getenv("XDG_DATA_HOME"); home != "" {
+			return filepath.Join(home, "mesij"), nil
+		}
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
+		return filepath.Join(userHome, ".local", "share", "mesij"), nil
+	}
+	config, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user data directory: %w", err)
+	}
+	return filepath.Join(config, "mesij"), nil
+}
+
+func findMarker(start string) (string, string, bool) {
+	for dir := start; ; dir = filepath.Dir(dir) {
+		data, err := os.ReadFile(filepath.Join(dir, markerName))
+		if err == nil {
+			var value marker
+			if json.Unmarshal(data, &value) == nil && strings.TrimSpace(value.Name) != "" {
+				return dir, value.Name, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", "", false
+		}
+	}
 }
 
 func defaultProjectName(common, root string) string {
@@ -117,6 +250,32 @@ func defaultProjectName(common, root string) string {
 		return name
 	}
 	return filepath.Base(root)
+}
+
+func sanitize(value string) string {
+	var result strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(value) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			result.WriteRune(r)
+			dash = false
+		} else if result.Len() > 0 && !dash {
+			result.WriteByte('-')
+			dash = true
+		}
+	}
+	cleaned := strings.Trim(result.String(), "-")
+	if cleaned == "" {
+		return "project"
+	}
+	return cleaned
+}
+
+func resolveFrom(base, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
 }
 
 func git(dir string, args ...string) (string, error) {

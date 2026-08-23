@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"mesij/internal/store"
@@ -21,6 +23,26 @@ func TestPathsOverlap(t *testing.T) {
 		if got := pathsOverlap(test.a, test.b); got != test.want {
 			t.Errorf("pathsOverlap(%q, %q) = %v, want %v", test.a, test.b, got, test.want)
 		}
+	}
+}
+
+func TestNormalizeFilesCanonicalizesSymlinkedRoots(t *testing.T) {
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "repo")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realRoot, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(realRoot, "internal", "api.go")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := normalizeFiles(realRoot, linkRoot, []string{"internal/api.go"})
+	if len(got) != 1 || got[0] != "internal/api.go" {
+		t.Fatalf("normalized files = %v", got)
 	}
 }
 

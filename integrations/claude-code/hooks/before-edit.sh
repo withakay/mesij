@@ -10,4 +10,6 @@ file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path /
 
 # The report becomes hook context. The skill tells the agent to start a work
 # claim before editing; this hook is deliberately advisory rather than blocking.
-mesij check --session "$session" --file "$file" --limit 20 2>/dev/null || true
+if ! mesij check --session "$session" --file "$file" --limit 20; then
+  printf 'mesij warning: pre-edit coordination check failed for %s\n' "$file"
+fi

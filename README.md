@@ -7,10 +7,12 @@ session.
 
 ## Design
 
-- **Worktree-aware:** the default database lives at
-  `<git-common-dir>/mesij/events.sqlite3`, so linked Git worktrees share a log.
-- **Named projects:** `--project NAME` (or `MESIJ_PROJECT`) creates an independent
-  event stream in the shared database. It defaults to the repository directory.
+- **Worktree-aware:** linked Git worktrees derive one project identity and share
+  one database in the platform user-data directory.
+- **Path-aware:** non-Git projects use an ancestor `.mesij-project` marker or the
+  canonical current path. `name:NAME` and `path:PATH` disambiguate selectors.
+- **External storage:** each inferred project gets a separate database under
+  `MESIJ_HOME/projects`; `--db` and `MESIJ_DB` remain explicit overrides.
 - **Actor sessions:** every event records both a readable actor and a session ID.
 - **Event-sourced:** active work is projected from `work.planned`,
   `work.implementing`/`work.started`, `work.finished`, and `work.deferred`
@@ -23,6 +25,8 @@ session.
   returns the original event; reusing a key with different data fails.
 - **Direct replies:** `--to SESSION` marks an intended recipient, while preserving
   the event in the public project log. This is routing, not access control.
+- **Aliases and mentions:** `--to ACTOR` resolves the most recently seen session;
+  inline `@actor` mentions appear in that actor's inbox.
 
 ## Build
 
@@ -68,9 +72,9 @@ mesij --project payments post \
   --key pay-142:handler-done \
   --message "Handler is complete; migration remains"
 
-# Address another session directly. Use an event ID with --reply-to when useful.
+# Address another session or actor alias. A reply ID routes back automatically.
 mesij --project payments reply \
-  --to 7f03a1... --reply-to 90ac42... \
+  --to reviewer --reply-to 90ac42... \
   --key pay-142:reply-review \
   --message "Please defer the migration; I am changing the same table"
 
@@ -88,6 +92,7 @@ and `reply` require a session.
 
 - `init` — initialize the project database.
 - `session` — create and announce an agent session; emits shell exports.
+- `agents` — list known actor aliases and sessions.
 - `check` — show active work and conflicts by task, change, phase, or file path.
 - `plan` — append a `work.planned` claim.
 - `implement` — append a `work.implementing` claim for the same work identity.
@@ -96,7 +101,8 @@ and `reply` require a session.
 - `post` — append an arbitrary typed message.
 - `emit` — read one strict JSON request from stdin or `--input PATH`, then write
   the resulting event as JSON.
-- `reply` — append a message addressed to a session.
+- `reply` — reply to an event or address an actor alias or exact session.
+- `inbox` — list messages sent by, addressed to, or mentioning a session.
 - `status` — show project, worktree, branch, commit, and database identity.
 - `tail` — emit the event stream as JSONL; add `--follow` to keep watching.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
@@ -111,8 +117,8 @@ are carried forward conservatively, so an implementation event does not need to
 repeat every file named during planning. If task/change identities are ambiguous,
 mesij asks for an explicit `--work`.
 
-Use `--json` with session, post, lifecycle, status, or check commands for agent
-integration. For JSON input and output, use `emit`:
+Use global `--json` before a command, or command-local `--json`, for agent
+integration. For strict JSON input and output, use `emit`:
 
 ```sh
 cat <<'JSON' | mesij --project payments emit
@@ -153,11 +159,32 @@ Without an explicit `--after`, `tail` emits the most recent window. With
 `--after 0`, it starts at the first event. Filters include `--from`, `--type`,
 `--session`, `--limit`, and `--poll`.
 
-`check --json` returns one coordination report containing `active_work` and
-`messages`. Active entries keep the immutable stored `payload` and may include a
-derived `projection` containing scopes carried forward from prior lifecycle
-events. Supplying `check --session ID` includes broadcasts and messages
-addressed to that session; omitting it displays the complete log.
+`check --json` returns one coordination report containing `through`,
+`active_work`, and `messages`. Persist `through` even when filters match no
+events. Active entries keep the immutable stored `payload` and include a derived
+`projection` containing scopes carried forward from prior lifecycle events.
+Supplying `check --session ID` includes broadcasts and messages addressed to
+that session; omitting it displays the complete log.
+
+## Project resolution
+
+Resolution uses the following order:
+
+1. `--db` or `MESIJ_DB` selects an explicit database. Project IDs then derive
+   from the canonical database path and project name in every working directory.
+2. `--project name:NAME` selects a logical name without filesystem probing.
+3. `--project path:PATH` selects an explicit project directory.
+4. Git projects derive identity from the canonical Git common directory.
+5. Non-Git projects use the nearest `.mesij-project` marker, then the canonical
+   current path.
+
+Run `mesij init` to write a marker for a non-Git project. Set `MESIJ_HOME` to
+override the platform data directory. See
+[`docs/architecture.md`](docs/architecture.md) for migrations, projections, and
+the retention boundary.
+
+Existing databases at `<git-common-dir>/mesij/events.sqlite3` remain in place
+and retain their original project IDs. New projects use external storage.
 
 ## Harness integrations
 

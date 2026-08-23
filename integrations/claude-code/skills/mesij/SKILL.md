@@ -7,12 +7,14 @@ description: Coordinate task, change, and file work with other agents, and send 
 
 Use `mesij` whenever this repository may have concurrent agents.
 
-1. Open a session once. If `MESIJ_SESSION` is absent, run:
+1. Open one session. Reuse the exact session ID supplied by the SessionStart
+   hook as `MESIJ_SESSION`. Only when no hook session was supplied, run:
    `eval "$(mesij session --actor "${MESIJ_ACTOR:-claude-code}")"`
 2. Before starting, inspect likely conflicts by every known scope:
    `mesij check --session "$MESIJ_SESSION" --task TASK_ID --change CHANGE_ID --file PATH [--file PATH...]`
-3. If another active task/change/file overlaps, prefer deferring or send its session a direct reply:
-   `mesij reply --to SESSION --reply-to EVENT_ID --message "..."`
+3. If another active task/change/file overlaps, prefer deferring or reply by
+   agent alias, session ID, or event ID:
+   `mesij reply --to AGENT_OR_SESSION --reply-to EVENT_ID --message "..."`
 4. Announce planning before changing code:
    `mesij plan --task TASK_ID --change CHANGE_ID --file PATH --key "TASK_ID:plan" --message "intent"`
 5. Move the same work identity into implementation before editing. Repeat

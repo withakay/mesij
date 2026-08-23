@@ -64,6 +64,8 @@ known task, change, and file scopes.
 - `MESIJ_SESSION` — unique ID for one agent run.
 - `MESIJ_PROJECT` — logical project stream; optional.
 - `MESIJ_DB` — shared SQLite path override; optional.
+- `MESIJ_HOME` — external Mesij data directory; optional.
 
 Direct messages are visible in the shared log. `recipient_session` is a routing
-hint rather than a privacy boundary.
+hint rather than a privacy boundary. `--to` accepts a session ID or actor alias;
+inline `@actor` mentions are available through `mesij inbox`.

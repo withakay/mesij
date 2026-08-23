@@ -90,24 +90,23 @@ func TestEmitRejectsNullAndEmptyFiles(t *testing.T) {
 	}
 }
 
-func TestEmitRunReturnsJSONForDiscoveryFailure(t *testing.T) {
+func TestEmitRunSupportsNonGitProject(t *testing.T) {
+	t.Setenv("MESIJ_HOME", t.TempDir())
+	t.Setenv("MESIJ_DB", "")
+	t.Setenv("MESIJ_PROJECT", "")
 	var stdout, stderr bytes.Buffer
 	runner := Runner{
 		Stdin:  bytes.NewBufferString(`{"event":"post","actor":"a","session":"s"}`),
 		Stdout: &stdout, Stderr: &stderr, Dir: t.TempDir(),
 	}
-	if code := runner.Run(context.Background(), []string{"emit"}); code != 1 {
+	if code := runner.Run(context.Background(), []string{"emit"}); code != 0 {
 		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
 	}
-	var response struct {
-		OK       bool   `json:"ok"`
-		Error    string `json:"error"`
-		ExitCode int    `json:"exit_code"`
-	}
+	var response store.Event
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.OK || response.ExitCode != 1 || response.Error == "" {
+	if response.Type != "message.posted" || response.ProjectID == "" {
 		t.Fatalf("response=%+v", response)
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,11 +22,16 @@ import (
 const usage = `mesij is an append-only message log for agents working in Git worktrees.
 
 Usage:
+  mesij [--db PATH] [--project NAME|path:PATH] [--json] COMMAND
+
+Commands:
   mesij [--db PATH] [--project NAME] init
   mesij [--db PATH] session --actor NAME
+  mesij [--db PATH] agents [--json]
   mesij [--db PATH] post --actor NAME --session ID --type TYPE [options] [MESSAGE]
   mesij [--db PATH] emit [--input PATH]
-  mesij [--db PATH] reply --actor NAME --session ID --to SESSION [options] [MESSAGE]
+  mesij [--db PATH] reply --actor NAME --session ID [--to ACTOR_OR_SESSION] [--reply-to EVENT] [MESSAGE]
+  mesij [--db PATH] inbox --session ID [--after SEQUENCE] [--json]
   mesij [--db PATH] plan --actor NAME --session ID [targets] [options]
   mesij [--db PATH] implement --actor NAME --session ID [targets] [options]
   mesij [--db PATH] start --actor NAME --session ID [targets] [options]
@@ -45,9 +52,10 @@ Examples:
   mesij check --after 12 --json
 
 A stable --key makes retries idempotent. If omitted, mesij generates a key.
-By default the database is under Git's common directory and is shared by all
-linked worktrees. The project name defaults to the repository directory name.
-Override these with --db/MESIJ_DB and --project/MESIJ_PROJECT.
+By default each project database is in MESIJ_HOME and shared by linked
+worktrees. The project name defaults to the repository or marked directory.
+Override storage with --db/MESIJ_DB. Use name:NAME or path:PATH to disambiguate
+explicit project selectors.
 `
 
 type Runner struct {
@@ -68,8 +76,12 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 	}
 	dbPath := global.String("db", "", "SQLite database path")
 	projectName := global.String("project", "", "project name (or MESIJ_PROJECT)")
+	globalJSON := global.Bool("json", false, "write structured JSON output")
 	global.Usage = func() { fmt.Fprint(r.Stderr, usage) }
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		if emitRequested {
 			return r.emitFailure(2, strings.TrimSpace(globalErrors.String()))
 		}
@@ -86,6 +98,16 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		fmt.Fprint(r.Stdout, usage)
 		return 0
 	}
+	if *globalJSON {
+		switch command {
+		case "init", "session", "agents", "post", "reply", "inbox", "plan", "implement", "start", "finish", "defer", "check", "status":
+			commandArgs = append([]string{"--json"}, commandArgs...)
+		case "emit", "tail":
+		case "tui":
+			fmt.Fprintln(r.Stderr, "mesij: --json is not supported with tui")
+			return 2
+		}
+	}
 
 	p, err := project.Discover(r.Dir, *dbPath, *projectName)
 	if err != nil {
@@ -101,12 +123,16 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		return r.init(ctx, p, commandArgs)
 	case "session":
 		return r.session(ctx, p, commandArgs)
+	case "agents":
+		return r.agents(ctx, p, commandArgs)
 	case "emit":
 		return r.emit(ctx, p, commandArgs)
 	case "post":
 		return r.post(ctx, p, commandArgs, "message.posted", false)
 	case "reply":
 		return r.post(ctx, p, commandArgs, "message.replied", true)
+	case "inbox":
+		return r.inbox(ctx, p, commandArgs)
 	case "plan":
 		return r.lifecycle(ctx, p, commandArgs, "work.planned")
 	case "implement":
@@ -152,6 +178,7 @@ func commandHint(args []string) string {
 func (r Runner) init(ctx context.Context, p project.Context, args []string) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr)
+	jsonOutput := fs.Bool("json", false, "write project context as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -159,11 +186,17 @@ func (r Runner) init(ctx context.Context, p project.Context, args []string) int 
 		fmt.Fprintln(r.Stderr, "mesij init: unexpected arguments")
 		return 2
 	}
+	if err := project.Init(p.Root, p.Name); err != nil {
+		return r.fail(err)
+	}
 	db, err := store.Open(ctx, p.Database)
 	if err != nil {
 		return r.fail(err)
 	}
 	db.Close()
+	if *jsonOutput {
+		return r.writeJSON(p)
+	}
 	fmt.Fprintf(r.Stdout, "initialized %s\n", p.Database)
 	return 0
 }
@@ -177,14 +210,17 @@ func (s *stringList) Set(v string) error {
 }
 
 type messagePayload struct {
-	Work    string          `json:"work,omitempty"`
-	Task    string          `json:"task,omitempty"`
-	Change  string          `json:"change,omitempty"`
-	Phase   string          `json:"phase,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Files   []string        `json:"files,omitempty"`
-	Data    json.RawMessage `json:"data,omitempty"`
+	Work     string          `json:"work,omitempty"`
+	Task     string          `json:"task,omitempty"`
+	Change   string          `json:"change,omitempty"`
+	Phase    string          `json:"phase,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	Files    []string        `json:"files,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Mentions []string        `json:"mentions,omitempty"`
 }
+
+var mentionPattern = regexp.MustCompile(`(?:^|[[:space:][:punct:]])@([A-Za-z0-9][A-Za-z0-9._-]*)`)
 
 func (r Runner) session(ctx context.Context, p project.Context, args []string) int {
 	fs := flag.NewFlagSet("session", flag.ContinueOnError)
@@ -231,6 +267,67 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+func (r Runner) agents(ctx context.Context, p project.Context, args []string) int {
+	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr)
+	jsonOutput := fs.Bool("json", false, "write agents as JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(r.Stderr, "mesij agents: unexpected arguments")
+		return 2
+	}
+	db, err := store.Open(ctx, p.Database)
+	if err != nil {
+		return r.fail(err)
+	}
+	defer db.Close()
+	agents, err := db.ListAgents(ctx, p.ID)
+	if err != nil {
+		return r.fail(err)
+	}
+	if *jsonOutput {
+		return r.writeJSON(agents)
+	}
+	for _, agent := range agents {
+		fmt.Fprintf(r.Stdout, "%s (%s) last seen %s\n", agent.Actor, agent.Session, agent.LastSeenAt.Local().Format(time.RFC3339))
+	}
+	return 0
+}
+
+func (r Runner) inbox(ctx context.Context, p project.Context, args []string) int {
+	fs := flag.NewFlagSet("inbox", flag.ContinueOnError)
+	fs.SetOutput(r.Stderr)
+	session := fs.String("session", os.Getenv("MESIJ_SESSION"), "agent session ID (or MESIJ_SESSION)")
+	after := fs.Int64("after", 0, "only messages after this sequence")
+	limit := fs.Int("limit", 100, "maximum messages (up to 1000)")
+	jsonOutput := fs.Bool("json", false, "write messages as JSON")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *session == "" || *after < 0 || *limit < 1 || *limit > 1000 || fs.NArg() != 0 {
+		fmt.Fprintln(r.Stderr, "mesij inbox: --session is required and arguments must be valid")
+		return 2
+	}
+	db, err := store.Open(ctx, p.Database)
+	if err != nil {
+		return r.fail(err)
+	}
+	defer db.Close()
+	events, err := db.Inbox(ctx, p.ID, *session, *after, *limit)
+	if err != nil {
+		return r.fail(err)
+	}
+	if *jsonOutput {
+		return r.writeJSON(events)
+	}
+	for _, event := range events {
+		writeEvent(r.Stdout, event)
+	}
+	return 0
+}
+
 func (r Runner) post(ctx context.Context, p project.Context, args []string, defaultType string, requireRecipient bool) int {
 	fs := flag.NewFlagSet("post", flag.ContinueOnError)
 	fs.SetOutput(r.Stderr)
@@ -256,8 +353,8 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 		fmt.Fprintln(r.Stderr, "mesij post: --actor/MESIJ_ACTOR and --session/MESIJ_SESSION are required")
 		return 2
 	}
-	if requireRecipient && *to == "" {
-		fmt.Fprintln(r.Stderr, "mesij reply: --to recipient session is required")
+	if requireRecipient && *to == "" && *replyTo == "" {
+		fmt.Fprintln(r.Stderr, "mesij reply: --to or --reply-to is required")
 		return 2
 	}
 	if isLifecycleType(*typeName) {
@@ -276,7 +373,32 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 		*message = strings.Join(fs.Args(), " ")
 	}
 
-	payload := messagePayload{Work: *work, Task: *task, Change: *change, Phase: *phase, Message: *message, Files: normalizeFiles(p.Root, p.Invocation, files)}
+	db, err := store.Open(ctx, p.Database)
+	if err != nil {
+		return r.fail(err)
+	}
+	defer db.Close()
+	recipient := ""
+	if *to != "" {
+		recipient, err = db.ResolveRecipient(ctx, p.ID, *to)
+		if err != nil {
+			return r.fail(fmt.Errorf("resolve recipient %q: %w", *to, err))
+		}
+	}
+	if *replyTo != "" {
+		replyRecipient, replyErr := db.ReplyRecipient(ctx, p.ID, *replyTo)
+		if replyErr != nil {
+			return r.fail(replyErr)
+		}
+		if recipient == "" {
+			recipient = replyRecipient
+		}
+	}
+	mentions := extractMentions(*message)
+	payload := messagePayload{
+		Work: *work, Task: *task, Change: *change, Phase: *phase, Message: *message,
+		Files: normalizeFiles(p.Root, p.Invocation, files), Mentions: mentions,
+	}
 	if *data != "" {
 		if !json.Valid([]byte(*data)) {
 			fmt.Fprintln(r.Stderr, "mesij post: --data must be valid JSON")
@@ -286,15 +408,10 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 	}
 	payloadJSON, _ := json.Marshal(payload)
 
-	db, err := store.Open(ctx, p.Database)
-	if err != nil {
-		return r.fail(err)
-	}
-	defer db.Close()
 	event, inserted, err := db.Append(ctx, store.NewEvent{
-		ProjectID: p.ID, Actor: *actor, Session: *session, Recipient: *to, ReplyTo: *replyTo,
+		ProjectID: p.ID, Actor: *actor, Session: *session, Recipient: recipient, ReplyTo: *replyTo,
 		Type: *typeName, Payload: payloadJSON,
-		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: *key,
+		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: *key, Mentions: mentions,
 	})
 	if err != nil {
 		return r.fail(err)
@@ -474,6 +591,19 @@ func isActiveLifecycle(eventType string) bool {
 	return eventType == "work.planned" || eventType == "work.implementing" || eventType == "work.started"
 }
 
+func extractMentions(message string) []string {
+	seen := make(map[string]bool)
+	for _, match := range mentionPattern.FindAllStringSubmatch(message, -1) {
+		seen[match[1]] = true
+	}
+	mentions := make([]string, 0, len(seen))
+	for mention := range seen {
+		mentions = append(mentions, mention)
+	}
+	sort.Strings(mentions)
+	return mentions
+}
+
 func lifecycleDisplayPhase(event store.Event, payload messagePayload) string {
 	if payload.Phase != "" {
 		return payload.Phase
@@ -482,11 +612,18 @@ func lifecycleDisplayPhase(event store.Event, payload messagePayload) string {
 }
 
 func normalizeFiles(root, invocation string, files []string) []string {
+	canonicalRoot, err := project.CanonicalPath(root)
+	if err == nil {
+		root = canonicalRoot
+	}
 	out := make([]string, 0, len(files))
 	for _, name := range files {
 		clean := filepath.Clean(name)
 		if !filepath.IsAbs(clean) {
 			clean = filepath.Join(invocation, clean)
+		}
+		if canonical, err := project.CanonicalPath(clean); err == nil {
+			clean = canonical
 		}
 		if filepath.IsAbs(clean) {
 			if rel, err := filepath.Rel(root, clean); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -534,7 +671,15 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 		return r.fail(err)
 	}
 	defer db.Close()
-	active, err := db.Active(ctx, p.ID)
+	through, err := db.LatestSequence(ctx, p.ID)
+	if err != nil {
+		return r.fail(err)
+	}
+	active, err := db.ActiveThrough(ctx, p.ID, through)
+	if err != nil {
+		return r.fail(err)
+	}
+	projectionErrors, err := db.ProjectionErrorCount(ctx, p.ID)
 	if err != nil {
 		return r.fail(err)
 	}
@@ -543,17 +688,22 @@ func (r Runner) check(ctx context.Context, p project.Context, args []string) int
 		Files: normalizeFiles(p.Root, p.Invocation, files),
 	}
 	relevant := filterActive(active, proposed)
-	events, err := db.List(ctx, store.Query{ProjectID: p.ID, After: *after, Limit: *limit, Actor: *actor, Type: *typeName, ForSession: *forSession, Latest: !afterSet})
+	events, err := db.List(ctx, store.Query{ProjectID: p.ID, After: *after, Through: through, Limit: *limit, Actor: *actor, Type: *typeName, ForSession: *forSession, Latest: !afterSet})
 	if err != nil {
 		return r.fail(err)
 	}
 	if *jsonOutput {
 		return r.writeJSON(struct {
-			Proposed      coordinationQuery `json:"proposed"`
-			ProposedFiles []string          `json:"proposed_files"`
-			Active        []store.Event     `json:"active_work"`
-			Messages      []store.Event     `json:"messages"`
-		}{proposed, proposed.Files, relevant, events})
+			Through          int64             `json:"through"`
+			ProjectionErrors int               `json:"projection_errors"`
+			Proposed         coordinationQuery `json:"proposed"`
+			ProposedFiles    []string          `json:"proposed_files"`
+			Active           []store.Event     `json:"active_work"`
+			Messages         []store.Event     `json:"messages"`
+		}{through, projectionErrors, proposed, proposed.Files, relevant, events})
+	}
+	if projectionErrors > 0 {
+		fmt.Fprintf(r.Stdout, "Warning: %d legacy lifecycle event(s) could not be projected.\n\n", projectionErrors)
 	}
 
 	if proposed.hasTargets() {
