@@ -30,13 +30,30 @@ session.
 
 ## Build
 
+Mise pins the Go runtime and defines the canonical development tasks. The
+Makefile provides short wrappers around those tasks.
+
 ```sh
-go build -o mesij ./cmd/mesij
-install -m 0755 mesij ~/.local/bin/mesij
+mise install
+make
+make check
+make install
 ```
 
-Requires Go 1.25 or newer. SQLite is embedded through the pure-Go
-`modernc.org/sqlite` driver.
+Useful commands:
+
+```sh
+make build
+make test
+make test-race
+make run ARGS="status"
+make format
+mise tasks
+```
+
+Go 1.25.0 is pinned in `mise.toml`. SQLite is embedded through the pure-Go
+`modernc.org/sqlite` driver. Run `mise run <task>` directly when Make is not
+available.
 
 ## Agent workflow
 

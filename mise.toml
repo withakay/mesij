@@ -1,0 +1,44 @@
+[tools]
+go = "1.25.0"
+
+[tasks.build]
+description = "Build all Go packages"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run the test suite"
+run = "go test ./..."
+
+[tasks.test-race]
+description = "Run the test suite with the race detector"
+run = "go test -race ./..."
+
+[tasks.run]
+description = "Run the Mesij CLI; pass arguments after --"
+run = "go run ./cmd/mesij"
+
+[tasks.install]
+description = "Install the Mesij CLI"
+run = "go install ./cmd/mesij"
+
+[tasks.format]
+description = "Format Go source files"
+run = "gofmt -w ."
+
+[tasks.format-check]
+description = "Check Go source formatting"
+run = '''
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  printf 'The following files require gofmt:\n%s\n' "$unformatted" >&2
+  exit 1
+fi
+'''
+
+[tasks.vet]
+description = "Run Go static analysis"
+run = "go vet ./..."
+
+[tasks.check]
+description = "Run all non-destructive verification"
+depends = ["format-check", "vet", "test", "build"]
