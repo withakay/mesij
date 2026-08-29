@@ -28,6 +28,26 @@ session.
 - **Aliases and mentions:** `--to ACTOR` resolves the most recently seen session;
   inline `@actor` mentions appear in that actor's inbox.
 
+## Install
+
+After the first release is published, install the latest release with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh
+```
+
+The installer places `mesij` in `$HOME/.local/bin`, verifies the downloaded
+archive with the release checksums, and supports macOS and Linux on amd64 and
+arm64. Use a project-local directory or pin a version when needed:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh -s -- --dir ./local/bin
+curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh -s -- --version 0.1.0
+```
+
+Release-please opens a release PR from Conventional Commit messages. Merging
+that PR creates the GitHub release and its downloadable archives.
+
 ## Build
 
 Mise pins the Go runtime and defines the canonical development tasks. The
