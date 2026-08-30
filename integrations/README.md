@@ -1,71 +1,108 @@
 # Harness integrations
 
-Mesij integration has three layers:
+Mesij integrations combine three layers:
 
-1. **Skill/instructions** teach the agent the coordination protocol.
-2. **Hooks** surface relevant state at session start and before edits.
-3. **Plugins/tools** can call the JSON CLI and provide a richer UX.
+1. **Skills** teach the coordination protocol.
+2. **Hooks** register stable sessions, surface inbox messages, and check edits.
+3. **Plugins/extensions** expose native Mesij tools and richer notifications.
 
-The skill is the primary behavioral contract: check task/change/file scopes,
-announce planning, move the same claim into implementation, communicate, and
-release. A pre-edit hook can detect a file path, but only the agent usually
-knows the task/change identifiers and whether it is planning or implementing.
+All integrations require a current `mesij` binary on `PATH`.
+
+## Shared Claude/Codex hook adapter
+
+Mesij provides a fail-open hook protocol adapter:
+
+```sh
+mesij hook session-start --actor HARNESS
+mesij hook inbox
+mesij hook pre-edit [--mode advisory|deny]
+```
+
+Each command reads one hook JSON object from stdin and emits the structured
+hook response expected by Claude Code and Codex. The adapter:
+
+- uses the harness `session_id` as the stable Mesij session;
+- persists Claude shell variables through `CLAUDE_ENV_FILE`;
+- keeps an atomic inbox cursor outside the repository;
+- injects new external messages on `UserPromptSubmit`;
+- blocks `Stop` once when unread messages arrive;
+- extracts Claude `Write`/`Edit` paths and Codex `apply_patch` paths;
+- ignores the current session's own work claims;
+- defaults to advisory overlap context and supports opt-in deny mode through
+  `MESIJ_HOOK_MODE=deny`.
+
+Errors are written to stderr and hooks fail open so a temporary coordination
+failure does not deadlock the coding harness.
 
 ## Claude Code
 
-`claude-code/` is laid out as a plugin with:
+`claude-code/` is a complete plugin:
 
 - `.claude-plugin/plugin.json`
 - `hooks/hooks.json`
-- `hooks/session-start.sh`
-- `hooks/before-edit.sh`
 - `skills/mesij/SKILL.md`
 
-The hooks require `mesij` and `jq` on `PATH`. They are advisory: session start
-shows current coordination state and pre-edit checks show path overlaps. The
-skill directs Claude to make and release explicit task claims.
+The hooks register the session, deliver the inbox before prompts and stopping,
+and check first-class file edits. The legacy shell wrappers remain as thin
+entry points to `mesij hook`.
 
 ## Codex
 
-Copy `codex/skills/mesij` into the skills directory used by the Codex
-installation, or copy its instructions into the repository's `AGENTS.md`.
-Codex should open one session, retain `MESIJ_SESSION`, and follow the skill for
-each task.
+`codex/` is a complete plugin:
 
-## Other harnesses
+- `.codex-plugin/plugin.json`
+- `hooks/hooks.json`
+- `skills/mesij/SKILL.md`
+- `skills/mesij/agents/openai.yaml`
 
-Source or adapt `generic/agent-start.sh`, then inject the mesij skill text into
-the harness's system/project instructions. A plugin can consume:
+Codex users must review and trust the plugin hooks. Standalone installations can
+copy `skills/mesij` to `.agents/skills/mesij`, but the plugin is needed for
+session registration and inbox delivery.
+
+## OpenCode
+
+`opencode/` contains a project plugin and skill. Copy them to
+`.opencode/plugins/mesij.ts` and `.opencode/skills/mesij/`.
+
+The plugin exposes `mesij_inbox`, `mesij_check`, `mesij_emit`, and
+`mesij_agents`; injects stable shell identity; polls inbox messages; and checks
+first-class file tools. See `opencode/README.md`.
+
+## Pi
+
+`pi/` is an installable Pi package containing both an extension and skill:
+
+```sh
+pi install ./integrations/pi
+```
+
+The extension exposes the same four tools, provides `/mesij-inbox`, injects new
+messages without forcing an idle turn, and maps Pi's durable session ID to
+Mesij. See `pi/README.md`.
+
+## Generic integrations
+
+Source or adapt `generic/agent-start.sh`, inject one of the skills into project
+instructions, and consume Mesij directly:
 
 ```sh
 mesij check --session "$MESIJ_SESSION" --after "$CURSOR" --json
-mesij check --task "$TASK_ID" --change "$CHANGE_ID" --file PATH --json
-```
-
-For a continuous event stream, prefer JSONL tailing:
-
-```sh
 mesij tail --after "$CURSOR" --follow --session "$MESIJ_SESSION"
 ```
 
-Each line is one immutable event. Persist each event's `sequence` as the next
-cursor. For request/response integrations, plugins can submit a JSON object with
-a `files` array through `mesij emit`.
-
-Plugins can map harness planning and implementation lifecycle callbacks to
-`mesij plan` and `mesij implement`. To integrate an edit tool, call
-`check --file PATH --json` before the tool executes. Avoid silently creating
-claims for every write: claims should describe a coherent work identity and all
-known task, change, and file scopes.
+Each `tail` line is one immutable event. Persist its `sequence`. For structured
+request/response integrations, submit a JSON object with a `files` array through
+`mesij emit`.
 
 ## Environment
 
 - `MESIJ_ACTOR` — readable agent/harness name.
-- `MESIJ_SESSION` — unique ID for one agent run.
-- `MESIJ_PROJECT` — logical project stream; optional.
-- `MESIJ_DB` — shared SQLite path override; optional.
-- `MESIJ_HOME` — external Mesij data directory; optional.
+- `MESIJ_SESSION` — stable identity for one agent run.
+- `MESIJ_PROJECT` — optional project selector.
+- `MESIJ_DB` — optional explicit shared database.
+- `MESIJ_HOME` — optional external Mesij data directory.
+- `MESIJ_HOOK_MODE` — `advisory` (default) or `deny` for pre-edit hooks.
 
-Direct messages are visible in the shared log. `recipient_session` is a routing
-hint rather than a privacy boundary. `--to` accepts a session ID or actor alias;
-inline `@actor` mentions are available through `mesij inbox`.
+Direct messages are visible in the shared log. Recipient routing is a
+coordination hint, not a privacy boundary. Hooks do not automatically finish
+claims because session shutdown does not prove completion.

@@ -1,0 +1,16 @@
+{
+  "name": "@withakay/mesij-pi",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "coordination", "multi-agent", "mesij"],
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

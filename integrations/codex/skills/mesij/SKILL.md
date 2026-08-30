@@ -1,30 +1,44 @@
 ---
 name: mesij
-description: Coordinate task, change, and file work with other agents, and send progress or direct replies through mesij.
+description: Coordinate task, change, and file work with concurrent agents; receive Mesij inbox messages and send direct replies.
 ---
 
 # Mesij coordination protocol
 
-Use `mesij` whenever this repository may have concurrent agents.
+The Codex hooks register a stable Mesij session from the Codex session identity,
+but Codex does not currently persist hook-created shell variables. Resolve the
+session independently in each shell invocation:
 
-1. Open a session once. If `MESIJ_SESSION` is absent, run:
-   `eval "$(mesij session --actor "${MESIJ_ACTOR:-codex}")"`
-2. Before starting, inspect likely conflicts by every known scope:
+```sh
+MESIJ_SESSION="${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}"
+```
+
+If neither Codex identity is available, use the exact session ID reported by the
+SessionStart hook. Never prefer an unrelated inherited `MESIJ_SESSION`, and do
+not create a second session for the same run. Include `--actor codex --session
+"$MESIJ_SESSION"` on every Mesij write command; do not assume assignments persist
+between tool calls.
+
+1. Check every known task/change/file scope before work:
    `mesij check --session "$MESIJ_SESSION" --task TASK_ID --change CHANGE_ID --file PATH [--file PATH...]`
-3. If another active task/change/file overlaps, prefer deferring or send its session a direct reply:
-   `mesij reply --to SESSION --reply-to EVENT_ID --message "..."`
-4. Announce planning before changing code:
-   `mesij plan --task TASK_ID --change CHANGE_ID --file PATH --key "TASK_ID:plan" --message "intent"`
-5. Move the same work identity into implementation before editing. Repeat
-   `--file` for every likely path, or use `mesij emit` with a JSON `files` array:
-   `mesij implement --task TASK_ID --change CHANGE_ID --file PATH [--file PATH...] --key "TASK_ID:implement" --message "approach"`
-6. Post decisions or useful progress with a stable retry key:
-   `mesij post --type progress.updated --task TASK_ID --key KEY --message "..."`
-7. Release the claim when done or intentionally postponed:
-   `mesij finish --task TASK_ID --key "TASK_ID:finish" --message "result"`
-   or `mesij defer --task TASK_ID --key "TASK_ID:defer" --message "reason"`
-8. Check messages again before merging.
+2. If another claim overlaps, coordinate or defer. Reply by actor/session and,
+   when available, event ID:
+   `mesij reply --actor codex --session "$MESIJ_SESSION" --to ACTOR_OR_SESSION --reply-to EVENT_ID --key KEY --message "..."`
+3. Announce planning with `mesij plan --actor codex --session
+   "$MESIJ_SESSION" ...`, then move the same work identity into `mesij implement
+   --actor codex --session "$MESIJ_SESSION" ...` before editing. Repeat `--file`
+   for all likely paths.
+4. Post decisions and progress using stable idempotency keys.
+5. Release every claim with `mesij finish` or `mesij defer`; never infer
+   completion merely because Codex is stopping.
+6. Review hook-injected inbox messages and check the inbox before merging or
+   handing off:
+   `mesij inbox --session "$MESIJ_SESSION" --json`
 
-`MESIJ_ACTOR`, `MESIJ_SESSION`, and optionally `MESIJ_PROJECT` should remain set
-for the session. Events are public coordination records; `--to` identifies the
-intended session but does not make a message secret.
+The pre-edit hook checks `apply_patch`, `Edit`, and `Write` paths. It is advisory
+by default; set `MESIJ_HOOK_MODE=deny` to reject known external overlaps.
+Specialized or shell-based writes may bypass hooks and remain governed by this
+skill.
+
+Mesij messages are project-visible coordination records. Recipient routing is
+not a confidentiality boundary.

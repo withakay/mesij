@@ -1,0 +1,12 @@
+{
+  "name": "mesij",
+  "version": "0.2.0",
+  "description": "Coordinate concurrent coding agents through the Mesij event log",
+  "keywords": ["coordination", "multi-agent", "inbox", "worktrees"],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Mesij",
+    "shortDescription": "Coordinate concurrent coding agents through a shared event log"
+  }
+}

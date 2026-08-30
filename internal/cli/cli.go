@@ -32,6 +32,7 @@ Commands:
   mesij [--db PATH] emit [--input PATH]
   mesij [--db PATH] reply --actor NAME --session ID [--to ACTOR_OR_SESSION] [--reply-to EVENT] [MESSAGE]
   mesij [--db PATH] inbox --session ID [--after SEQUENCE] [--json]
+  mesij [--db PATH] hook session-start|inbox|pre-edit [options]
   mesij [--db PATH] plan --actor NAME --session ID [targets] [options]
   mesij [--db PATH] implement --actor NAME --session ID [targets] [options]
   mesij [--db PATH] start --actor NAME --session ID [targets] [options]
@@ -102,7 +103,7 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		switch command {
 		case "init", "session", "agents", "post", "reply", "inbox", "plan", "implement", "start", "finish", "defer", "check", "status":
 			commandArgs = append([]string{"--json"}, commandArgs...)
-		case "emit", "tail":
+		case "emit", "tail", "hook":
 		case "tui":
 			fmt.Fprintln(r.Stderr, "mesij: --json is not supported with tui")
 			return 2
@@ -133,6 +134,8 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 		return r.post(ctx, p, commandArgs, "message.replied", true)
 	case "inbox":
 		return r.inbox(ctx, p, commandArgs)
+	case "hook":
+		return r.hook(ctx, p, commandArgs)
 	case "plan":
 		return r.lifecycle(ctx, p, commandArgs, "work.planned")
 	case "implement":

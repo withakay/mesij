@@ -1,0 +1,7 @@
+interface:
+  display_name: "Mesij"
+  short_description: "Coordinate work and messages with concurrent coding agents"
+  default_prompt: "Use Mesij to check conflicts, claim work, monitor the inbox, and release the claim."
+
+policy:
+  allow_implicit_invocation: true

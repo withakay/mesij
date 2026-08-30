@@ -140,6 +140,8 @@ and `reply` require a session.
   the resulting event as JSON.
 - `reply` — reply to an event or address an actor alias or exact session.
 - `inbox` — list messages sent by, addressed to, or mentioning a session.
+- `hook` — adapt Claude/Codex lifecycle hook JSON to Mesij sessions, inboxes,
+  and pre-edit checks.
 - `status` — show project, worktree, branch, commit, and database identity.
 - `tail` — emit the event stream as JSONL; add `--follow` to keep watching.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
@@ -225,16 +227,22 @@ and retain their original project IDs. New projects use external storage.
 
 ## Harness integrations
 
-`integrations/` contains reusable coordination policy and adapters:
+`integrations/` contains plugins, hooks, extensions, and skills:
 
-- `claude-code/` — plugin manifest, session/pre-edit hooks, and a mesij skill.
-- `codex/skills/mesij/` — a portable Codex skill.
-- `generic/agent-start.sh` — a shell bootstrap for other harnesses.
+- `claude-code/` — Claude Code plugin, lifecycle hooks, and skill.
+- `codex/` — Codex plugin, lifecycle hooks, skill, and UI metadata.
+- `opencode/` — OpenCode plugin with native tools, inbox polling, and skill.
+- `pi/` — installable Pi extension/skill package with native tools and inbox
+  polling.
+- `generic/agent-start.sh` — shell bootstrap for other harnesses.
 
-The skill is the primary behavioral contract: check, claim, communicate, and
-release. Hooks provide reminders at lifecycle/tool boundaries, while CLI JSON
-output allows richer plugins to route messages or build approvals. See
-[`integrations/README.md`](integrations/README.md).
+Claude and Codex share the first-class `mesij hook` adapter. OpenCode and Pi
+provide native `mesij_inbox`, `mesij_check`, `mesij_emit`, and `mesij_agents`
+tools. See [`integrations/README.md`](integrations/README.md).
+
+A staged HTTP API design, including CLI-generated database-backed tokens passed
+through `x-message-api-token`, is documented in
+[`docs/rest-api-plan.md`](docs/rest-api-plan.md).
 
 ## Event envelope
 
