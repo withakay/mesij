@@ -75,6 +75,15 @@ Go 1.25.0 is pinned in `mise.toml`. SQLite is embedded through the pure-Go
 `modernc.org/sqlite` driver. Run `mise run <task>` directly when Make is not
 available.
 
+## TypeScript REST API MVP
+
+A portable, framework-free, standalone REST API for Node.js 24+
+(`node:sqlite`) and Cloudflare Workers (D1) lives in [`api/`](api/README.md).
+It owns a separate marked database and must not be pointed at the Go CLI's
+SQLite database. It includes its own schema migrations, token CLI, Wrangler
+configuration, and tests. The documented MVP intentionally does not implement
+the Go CLI's full projections, conflict check, aliases, or inbox behavior.
+
 ## Agent workflow
 
 Global flags such as `--project` and `--db` go before the command.
@@ -231,18 +240,21 @@ and retain their original project IDs. New projects use external storage.
 
 - `claude-code/` — Claude Code plugin, lifecycle hooks, and skill.
 - `codex/` — Codex plugin, lifecycle hooks, skill, and UI metadata.
+- `github-copilot/` — GitHub Copilot CLI Open Plugin Spec plugin, hooks, and
+  skill.
 - `opencode/` — OpenCode plugin with native tools, inbox polling, and skill.
 - `pi/` — installable Pi extension/skill package with native tools and inbox
   polling.
 - `generic/agent-start.sh` — shell bootstrap for other harnesses.
 
-Claude and Codex share the first-class `mesij hook` adapter. OpenCode and Pi
-provide native `mesij_inbox`, `mesij_check`, `mesij_emit`, and `mesij_agents`
-tools. See [`integrations/README.md`](integrations/README.md).
+Claude, Codex, and GitHub Copilot CLI share the first-class `mesij hook`
+adapter. OpenCode and Pi provide native `mesij_inbox`, `mesij_check`,
+`mesij_emit`, and `mesij_agents` tools. See
+[`integrations/README.md`](integrations/README.md).
 
-A staged HTTP API design, including CLI-generated database-backed tokens passed
-through `x-message-api-token`, is documented in
-[`docs/rest-api-plan.md`](docs/rest-api-plan.md).
+The portable standalone REST API for Node.js 24+ and Cloudflare Workers/D1
+lives in [`api/`](api/README.md). Its design and future parity work are tracked
+in [`docs/rest-api-plan.md`](docs/rest-api-plan.md).
 
 ## Event envelope
 

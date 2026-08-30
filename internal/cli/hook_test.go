@@ -32,6 +32,32 @@ func runHook(t *testing.T, p project.Context, input string, args ...string) (int
 	return code, stdout.String(), stderr.String()
 }
 
+func TestReadHookInputAcceptsSnakeAndCopilotCamelCase(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		event string
+		tool  string
+		path  string
+	}{
+		{name: "snake", input: `{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Edit","tool_args":{"file_path":"snake.go"}}`, event: "PreToolUse", tool: "Edit", path: "snake.go"},
+		{name: "camel", input: `{"sessionId":"s","hookEventName":"preToolUse","toolName":"create","toolArgs":"{\"filePath\":\"camel.go\"}"}`, event: "preToolUse", tool: "create", path: "camel.go"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input, err := readHookInput(strings.NewReader(test.input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.SessionID != "s" || input.HookEventName != test.event || input.ToolName != test.tool {
+				t.Fatalf("input=%+v", input)
+			}
+			if files := hookFiles(input); len(files) != 1 || files[0] != test.path {
+				t.Fatalf("files=%v", files)
+			}
+		})
+	}
+}
+
 func TestHookSessionAndIncrementalInbox(t *testing.T) {
 	p := hookTestProject(t)
 	state := t.TempDir()
@@ -182,5 +208,85 @@ func TestTruncateUTF8BoundsOversizedHookMessages(t *testing.T) {
 	got := truncateUTF8(value, 4096)
 	if len(got) > 4096 || !utf8.ValidString(got) || !strings.HasSuffix(got, "…") {
 		t.Fatalf("truncated value bytes=%d valid=%v", len(got), utf8.ValidString(got))
+	}
+}
+func TestHookCopilotFormatUsesTopLevelFields(t *testing.T) {
+	p := hookTestProject(t)
+	t.Setenv("PLUGIN_DATA", t.TempDir())
+	code, output, stderr := runHook(t, p, `{"sessionId":"copilot-session","hookEventName":"sessionStart"}`, "session-start", "--actor", "github-copilot", "--format", "copilot")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	var response hookOutput
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.AdditionalContext == "" || response.HookSpecificOutput != nil {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestHookCopilotCamelCaseToolArgsReportsOverlap(t *testing.T) {
+	p := hookTestProject(t)
+	db, err := store.Open(context.Background(), p.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = db.Append(context.Background(), store.NewEvent{
+		ProjectID: p.ID, Actor: "other", Session: "other-session", Type: "work.implementing",
+		Payload:  json.RawMessage(`{"work":"other","files":["internal/copilot.go"]}`),
+		Worktree: p.Worktree, IdempotencyKey: "other-copilot",
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := `{"sessionId":"copilot-session","hookEventName":"preToolUse","toolName":"create","toolArgs":"{\"path\":\"internal/copilot.go\"}"}`
+	code, output, stderr := runHook(t, p, input, "pre-edit", "--mode", "deny", "--format", "copilot")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	var response hookOutput
+	if err := json.Unmarshal([]byte(output), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.PermissionDecision != "deny" || !strings.Contains(response.PermissionDecisionReason, "other") {
+		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestHookInboxBlocksStopAndAgentStop(t *testing.T) {
+	for _, eventName := range []string{"Stop", "agentStop"} {
+		t.Run(eventName, func(t *testing.T) {
+			p := hookTestProject(t)
+			t.Setenv("PLUGIN_DATA", t.TempDir())
+			_, _, _ = runHook(t, p, `{"sessionId":"copilot-session"}`, "session-start", "--actor", "github-copilot", "--format", "copilot")
+			db, err := store.Open(context.Background(), p.Database)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, _ := json.Marshal(messagePayload{Message: "review before stopping"})
+			_, _, err = db.Append(context.Background(), store.NewEvent{
+				ProjectID: p.ID, Actor: "other", Session: "other-session", Recipient: "copilot-session",
+				Type: "message.posted", Payload: payload, Worktree: p.Worktree, IdempotencyKey: "stop-message",
+			})
+			db.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			code, output, stderr := runHook(t, p, fmt.Sprintf(`{"sessionId":"copilot-session","hookEventName":%q}`, eventName), "inbox", "--format", "copilot")
+			if code != 0 || stderr != "" {
+				t.Fatalf("code=%d stderr=%s", code, stderr)
+			}
+			var response hookOutput
+			if err := json.Unmarshal([]byte(output), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Decision != "block" || !strings.Contains(response.Reason, "review before stopping") {
+				t.Fatalf("response=%+v", response)
+			}
+		})
 	}
 }

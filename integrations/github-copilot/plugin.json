@@ -1,0 +1,19 @@
+{
+  "name": "mesij",
+  "description": "Coordinate concurrent coding agents through the Mesij event log",
+  "version": "0.2.0",
+  "author": {
+    "name": "mesij",
+    "url": "https://github.com/withakay/mesij"
+  },
+  "homepage": "https://github.com/withakay/mesij",
+  "repository": "https://github.com/withakay/mesij",
+  "keywords": [
+    "coordination",
+    "multi-agent",
+    "inbox",
+    "worktrees",
+    "copilot"
+  ],
+  "skills": "skills/"
+}

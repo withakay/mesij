@@ -21,17 +21,83 @@ import (
 )
 
 type hookInput struct {
-	SessionID     string         `json:"session_id"`
-	SessionIDAlt  string         `json:"sessionId"`
-	HookEventName string         `json:"hook_event_name"`
-	ToolName      string         `json:"tool_name"`
-	ToolInput     map[string]any `json:"tool_input"`
+	SessionID     string
+	HookEventName string
+	ToolName      string
+	ToolInput     map[string]any
+}
+
+func (input *hookInput) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		SessionID          string          `json:"session_id"`
+		SessionIDCamel     string          `json:"sessionId"`
+		HookEventName      string          `json:"hook_event_name"`
+		HookEventNameCamel string          `json:"hookEventName"`
+		ToolName           string          `json:"tool_name"`
+		ToolNameCamel      string          `json:"toolName"`
+		ToolInput          json.RawMessage `json:"tool_input"`
+		ToolArgs           json.RawMessage `json:"tool_args"`
+		ToolArgsCamel      json.RawMessage `json:"toolArgs"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	input.SessionID = firstNonEmpty(raw.SessionID, raw.SessionIDCamel)
+	input.HookEventName = firstNonEmpty(raw.HookEventName, raw.HookEventNameCamel)
+	input.ToolName = firstNonEmpty(raw.ToolName, raw.ToolNameCamel)
+	arguments, err := decodeHookArguments(raw.ToolInput, raw.ToolArgs, raw.ToolArgsCamel)
+	if err != nil {
+		return err
+	}
+	input.ToolInput = arguments
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func decodeHookArguments(values ...json.RawMessage) (map[string]any, error) {
+	var merged map[string]any
+	for _, raw := range values {
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var value any
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("decode hook tool arguments: %w", err)
+		}
+		if encoded, ok := value.(string); ok {
+			if err := json.Unmarshal([]byte(encoded), &value); err != nil {
+				return nil, fmt.Errorf("decode hook tool arguments string: %w", err)
+			}
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if merged == nil {
+			merged = make(map[string]any, len(object))
+		}
+		for key, argument := range object {
+			merged[key] = argument
+		}
+	}
+	return merged, nil
 }
 
 type hookOutput struct {
-	Decision           string              `json:"decision,omitempty"`
-	Reason             string              `json:"reason,omitempty"`
-	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	Decision                 string              `json:"decision,omitempty"`
+	Reason                   string              `json:"reason,omitempty"`
+	AdditionalContext        string              `json:"additionalContext,omitempty"`
+	PermissionDecision       string              `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string              `json:"permissionDecisionReason,omitempty"`
+	HookSpecificOutput       *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
 type hookSpecificOutput struct {
@@ -51,6 +117,7 @@ func (r Runner) hook(ctx context.Context, p project.Context, args []string) int 
 	fs.SetOutput(r.Stderr)
 	actor := fs.String("actor", "", "stable actor name")
 	mode := fs.String("mode", os.Getenv("MESIJ_HOOK_MODE"), "pre-edit mode: advisory or deny")
+	format := fs.String("format", "vscode", "hook output format: vscode or copilot")
 	if *mode == "" {
 		*mode = "advisory"
 	}
@@ -59,6 +126,10 @@ func (r Runner) hook(ctx context.Context, p project.Context, args []string) int 
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(r.Stderr, "mesij hook: unexpected arguments")
+		return 2
+	}
+	if *format != "vscode" && *format != "copilot" {
+		fmt.Fprintln(r.Stderr, "mesij hook: --format must be vscode or copilot")
 		return 2
 	}
 	if command == "pre-edit" && *mode != "advisory" && *mode != "deny" {
@@ -72,9 +143,6 @@ func (r Runner) hook(ctx context.Context, p project.Context, args []string) int 
 		return 0
 	}
 	session := input.SessionID
-	if session == "" {
-		session = input.SessionIDAlt
-	}
 	if session == "" {
 		session = os.Getenv("MESIJ_SESSION")
 	}
@@ -92,11 +160,11 @@ func (r Runner) hook(ctx context.Context, p project.Context, args []string) int 
 			fmt.Fprintln(r.Stderr, "mesij hook session-start: --actor is required")
 			return 2
 		}
-		return r.hookSessionStart(ctx, p, input, *actor, session)
+		return r.hookSessionStart(ctx, p, input, *actor, session, *format)
 	case "inbox":
-		return r.hookInbox(ctx, p, input, session)
+		return r.hookInbox(ctx, p, input, session, *format)
 	case "pre-edit":
-		return r.hookPreEdit(ctx, p, input, session, *mode)
+		return r.hookPreEdit(ctx, p, input, session, *mode, *format)
 	default:
 		fmt.Fprintf(r.Stderr, "mesij hook: unknown hook command %q\n", command)
 		return 2
@@ -123,7 +191,7 @@ func readHookInput(reader io.Reader) (hookInput, error) {
 	return input, nil
 }
 
-func (r Runner) hookSessionStart(ctx context.Context, p project.Context, input hookInput, actor, session string) int {
+func (r Runner) hookSessionStart(ctx context.Context, p project.Context, input hookInput, actor, session, format string) int {
 	db, err := store.Open(ctx, p.Database)
 	if err != nil {
 		return r.hookWarning(err)
@@ -148,9 +216,7 @@ func (r Runner) hookSessionStart(ctx context.Context, p project.Context, input h
 	if formatted := formatHookMessages(messages); formatted != "" {
 		text += "\n\nPending Mesij messages:\n" + formatted
 	}
-	output := hookOutput{HookSpecificOutput: &hookSpecificOutput{
-		HookEventName: hookEvent(input, "SessionStart"), AdditionalContext: text,
-	}}
+	output := contextHookOutput(format, hookEvent(input, "SessionStart"), text)
 	if err := r.writeHookOutput(output); err != nil {
 		return r.hookWarning(err)
 	}
@@ -160,7 +226,7 @@ func (r Runner) hookSessionStart(ctx context.Context, p project.Context, input h
 	return 0
 }
 
-func (r Runner) hookInbox(ctx context.Context, p project.Context, input hookInput, session string) int {
+func (r Runner) hookInbox(ctx context.Context, p project.Context, input hookInput, session, format string) int {
 	db, err := store.Open(ctx, p.Database)
 	if err != nil {
 		return r.hookWarning(err)
@@ -179,15 +245,13 @@ func (r Runner) hookInbox(ctx context.Context, p project.Context, input hookInpu
 	}
 	eventName := hookEvent(input, "UserPromptSubmit")
 	var output hookOutput
-	if eventName == "Stop" {
+	if eventName == "Stop" || eventName == "agentStop" || eventName == "AgentStop" {
 		output = hookOutput{
 			Decision: "block",
 			Reason:   "New Mesij messages arrived. Review and reply before stopping:\n" + formatted,
 		}
 	} else {
-		output = hookOutput{HookSpecificOutput: &hookSpecificOutput{
-			HookEventName: eventName, AdditionalContext: "New Mesij messages:\n" + formatted,
-		}}
+		output = contextHookOutput(format, eventName, "New Mesij messages:\n"+formatted)
 	}
 	if err := r.writeHookOutput(output); err != nil {
 		return r.hookWarning(err)
@@ -198,7 +262,7 @@ func (r Runner) hookInbox(ctx context.Context, p project.Context, input hookInpu
 	return 0
 }
 
-func (r Runner) hookPreEdit(ctx context.Context, p project.Context, input hookInput, session, mode string) int {
+func (r Runner) hookPreEdit(ctx context.Context, p project.Context, input hookInput, session, mode, format string) int {
 	files := hookFiles(input)
 	if len(files) == 0 {
 		return 0
@@ -224,14 +288,25 @@ func (r Runner) hookPreEdit(ctx context.Context, p project.Context, input hookIn
 		return 0
 	}
 	text := formatHookConflicts(external)
-	output := &hookSpecificOutput{HookEventName: hookEvent(input, "PreToolUse")}
-	if mode == "deny" {
-		output.PermissionDecision = "deny"
-		output.PermissionDecisionReason = text
+	var response hookOutput
+	if format == "copilot" {
+		if mode == "deny" {
+			response.PermissionDecision = "deny"
+			response.PermissionDecisionReason = text
+		} else {
+			response.AdditionalContext = text
+		}
 	} else {
-		output.AdditionalContext = text
+		output := &hookSpecificOutput{HookEventName: hookEvent(input, "PreToolUse")}
+		if mode == "deny" {
+			output.PermissionDecision = "deny"
+			output.PermissionDecisionReason = text
+		} else {
+			output.AdditionalContext = text
+		}
+		response.HookSpecificOutput = output
 	}
-	if err := r.writeHookOutput(hookOutput{HookSpecificOutput: output}); err != nil {
+	if err := r.writeHookOutput(response); err != nil {
 		return r.hookWarning(err)
 	}
 	return 0
@@ -373,7 +448,7 @@ func hookEvent(input hookInput, fallback string) string {
 
 func hookFiles(input hookInput) []string {
 	files := make([]string, 0)
-	for _, key := range []string{"file_path", "path"} {
+	for _, key := range []string{"file_path", "filePath", "path"} {
 		if value, ok := input.ToolInput[key].(string); ok && strings.TrimSpace(value) != "" {
 			files = append(files, value)
 		}
@@ -442,6 +517,15 @@ func formatHookConflicts(events []store.Event) string {
 	}
 	lines = append(lines, "Coordinate or defer before editing if the overlap is material.")
 	return strings.Join(lines, "\n")
+}
+
+func contextHookOutput(format, eventName, text string) hookOutput {
+	if format == "copilot" {
+		return hookOutput{AdditionalContext: text}
+	}
+	return hookOutput{HookSpecificOutput: &hookSpecificOutput{
+		HookEventName: eventName, AdditionalContext: text,
+	}}
 }
 
 func (r Runner) writeHookOutput(output hookOutput) error {

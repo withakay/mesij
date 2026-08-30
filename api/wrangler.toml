@@ -1,0 +1,13 @@
+name = "mesij-api"
+main = "src/worker.ts"
+compatibility_date = "2026-08-30"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+MESIJ_PROJECT_ID = "REPLACE_WITH_PROJECT_ID"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mesij-api"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"

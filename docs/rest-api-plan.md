@@ -1,5 +1,11 @@
 # REST API plan
 
+> **Status (August 30, 2026):** [`api/`](../api/README.md) now provides a
+> standalone Node.js 24+/Cloudflare Workers D1 MVP for health, authenticated
+> event writes, and cursor-based event reads. It intentionally uses its own
+> database. The plan below describes the later full-parity API that can share
+> Mesij's service semantics and projections.
+
 ## Goal
 
 Add an opt-in HTTP API over Mesij's existing project database without changing

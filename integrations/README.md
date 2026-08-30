@@ -8,18 +8,19 @@ Mesij integrations combine three layers:
 
 All integrations require a current `mesij` binary on `PATH`.
 
-## Shared Claude/Codex hook adapter
+## Shared Claude/Codex/Copilot hook adapter
 
 Mesij provides a fail-open hook protocol adapter:
 
 ```sh
 mesij hook session-start --actor HARNESS
 mesij hook inbox
-mesij hook pre-edit [--mode advisory|deny]
+mesij hook pre-edit [--mode advisory|deny] [--format vscode|copilot]
 ```
 
 Each command reads one hook JSON object from stdin and emits the structured
-hook response expected by Claude Code and Codex. The adapter:
+hook response expected by Claude Code, Codex, or GitHub Copilot CLI. The
+adapter:
 
 - uses the harness `session_id` as the stable Mesij session;
 - persists Claude shell variables through `CLAUDE_ENV_FILE`;
@@ -58,6 +59,18 @@ entry points to `mesij hook`.
 Codex users must review and trust the plugin hooks. Standalone installations can
 copy `skills/mesij` to `.agents/skills/mesij`, but the plugin is needed for
 session registration and inbox delivery.
+
+## GitHub Copilot CLI
+
+`github-copilot/` is an Open Plugin Spec plugin with `plugin.json`,
+`hooks/hooks.json`, and `skills/mesij/SKILL.md`. It registers stable sessions,
+checks first-class edits, polls the inbox after tools, and uses `agentStop` to
+surface messages that arrive before completion.
+
+```sh
+copilot plugin install withakay/mesij:integrations/github-copilot
+```
+
 
 ## OpenCode
 
