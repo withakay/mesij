@@ -8,6 +8,19 @@ Mesij integrations combine three layers:
 
 All integrations require a current `mesij` binary on `PATH`.
 
+## Capability matrix
+
+| Harness | Stable session | Automatic inbox context | Native Mesij tools | Automatic pre-edit check | Deny mode | Shell-write coverage |
+| --- | --- | --- | --- | --- | --- | --- |
+| Claude Code | Yes | Prompt and stop hooks | No | `Write` / `Edit` | `MESIJ_HOOK_MODE=deny` | No |
+| Codex | Yes | Prompt and stop hooks | No | `apply_patch` / `Edit` / `Write` | `MESIJ_HOOK_MODE=deny` | No |
+| GitHub Copilot CLI | Yes | Post-tool and stop hooks | No | `edit` / `write` / `create` / `apply_patch` | `MESIJ_HOOK_MODE=deny` | No |
+| OpenCode | Yes | Three-second poll | Yes | First-class edit/write/patch tools | `MESIJ_ENFORCE_CONFLICTS=1` | No |
+| Pi | Yes | Three-second poll | Yes | No automatic interception | No | No |
+
+Skills remain authoritative because shell-based mutation may bypass file-tool
+hooks. No integration automatically finishes claims on shutdown.
+
 ## Shared Claude/Codex/Copilot hook adapter
 
 Mesij provides a fail-open hook protocol adapter:
@@ -26,8 +39,9 @@ adapter:
 - persists Claude shell variables through `CLAUDE_ENV_FILE`;
 - keeps an atomic inbox cursor outside the repository;
 - injects new external messages on `UserPromptSubmit`;
-- blocks `Stop` once when unread messages arrive;
-- extracts Claude `Write`/`Edit` paths and Codex `apply_patch` paths;
+- blocks `Stop`/`agentStop` once when unread messages arrive;
+- extracts Claude `Write`/`Edit`, Codex `apply_patch`, and GitHub Copilot
+  edit/write/create/patch paths;
 - ignores the current session's own work claims;
 - defaults to advisory overlap context and supports opt-in deny mode through
   `MESIJ_HOOK_MODE=deny`.
@@ -45,7 +59,7 @@ failure does not deadlock the coding harness.
 
 The hooks register the session, deliver the inbox before prompts and stopping,
 and check first-class file edits. The legacy shell wrappers remain as thin
-entry points to `mesij hook`.
+entry points to `mesij hook`. See [`claude-code/README.md`](claude-code/README.md).
 
 ## Codex
 
@@ -58,7 +72,7 @@ entry points to `mesij hook`.
 
 Codex users must review and trust the plugin hooks. Standalone installations can
 copy `skills/mesij` to `.agents/skills/mesij`, but the plugin is needed for
-session registration and inbox delivery.
+session registration and inbox delivery. See [`codex/README.md`](codex/README.md).
 
 ## GitHub Copilot CLI
 
@@ -70,7 +84,6 @@ surface messages that arrive before completion.
 ```sh
 copilot plugin install withakay/mesij:integrations/github-copilot
 ```
-
 
 ## OpenCode
 
@@ -114,7 +127,9 @@ request/response integrations, submit a JSON object with a `files` array through
 - `MESIJ_PROJECT` — optional project selector.
 - `MESIJ_DB` — optional explicit shared database.
 - `MESIJ_HOME` — optional external Mesij data directory.
-- `MESIJ_HOOK_MODE` — `advisory` (default) or `deny` for pre-edit hooks.
+- `MESIJ_HOOK_MODE` — `advisory` (default) or `deny` for hook integrations.
+- `MESIJ_ENFORCE_CONFLICTS` — set to `1` for OpenCode's strict first-class
+  edit-tool blocking.
 
 Direct messages are visible in the shared log. Recipient routing is a
 coordination hint, not a privacy boundary. Hooks do not automatically finish

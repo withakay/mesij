@@ -1,5 +1,8 @@
 # Architecture
 
+For the normative event and process contract, see
+[`protocol.md`](protocol.md). This document explains implementation choices.
+
 ## Purpose
 
 Mesij is a best-effort coordination channel. It records what agents report so
@@ -35,8 +38,9 @@ share one stream. Export those pre-release streams before upgrading if they must
 be retained.
 
 Default non-Git discovery intentionally searches ancestor directories for a
-marker, like Git searches for `.git`. Use `path:PATH` to pin a directory and
-bypass ancestor markers.
+marker, like Git searches for `.git`. Use `path:PATH` to bypass ancestor marker
+discovery and pin a non-Git directory. Inside Git, the selected path is still
+resolved to the containing repository root/common directory.
 
 ## Write model
 
@@ -50,9 +54,11 @@ processes. Each accepted write transaction:
 5. Commits all changes or rolls back all changes.
 
 Database triggers reject event and idempotency-key updates and deletes. The
-`active_work` table is disposable derived state. Schema migration version 3
-builds it from existing events. Malformed legacy lifecycle rows remain immutable
-events and are recorded in `projection_errors`; `check` reports their count.
+`active_work` table is disposable derived state. When upgrading a schema older
+than version 2, Mesij rebuilds agents, mentions, active work, and projection
+errors by replaying existing events. Malformed legacy lifecycle rows remain
+immutable events and are recorded in `projection_errors`; `check` reports their
+count.
 
 ## Reads and streams
 
@@ -63,6 +69,12 @@ so filtered consumers can checkpoint quiet intervals. `inbox` is a projection
 over sender sessions, direct recipients, and actor mentions. It does not record
 delivery or read receipts.
 
+## Standalone API boundary
+
+The TypeScript Node.js/Cloudflare Workers API owns a separate metadata-marked
+database. It currently implements authenticated event exchange only and does
+not update canonical projections. It must not share a database with the Go CLI.
+
 ## Retention boundary
 
 Retention is not active. Direct deletion would violate the current immutable-log
@@ -71,10 +83,13 @@ contract. A future version must use a schema migration and this sequence:
 1. Select expired events through a durable sequence checkpoint.
 2. Copy them to a versioned archive database outside the project tree.
 3. Verify event IDs, counts, and a content hash.
-4. Rebuild or update derived projections.
-5. Remove the immutable-delete guard only inside the retention transaction.
-6. Delete archived live rows and restore the guard.
-7. Append a `retention.compacted` event with archive metadata.
+4. Apply a schema migration that preserves archived idempotency lookup and
+   detaches or replaces foreign-key references from mentions, active work,
+   projection errors, and idempotency facts.
+5. Remove immutable guards only inside the compaction transaction.
+6. Delete or rebuild dependent rows before deleting archived live events.
+7. Restore guards and rebuild all affected projections.
+8. Append a `retention.compacted` event with archive and checkpoint metadata.
 
 Ordered archives plus the active database remain the complete event source.
 Permanent archive deletion is a separate policy.

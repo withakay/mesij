@@ -14,7 +14,12 @@ so include `--actor github-copilot --session SESSION_ID` on every Mesij write.
    `mesij check --session SESSION_ID --task TASK_ID --change CHANGE_ID --file PATH [--file PATH...]`
 2. Coordinate or defer when another claim overlaps. Reply by actor/session and,
    when available, event ID:
-   `mesij reply --actor github-copilot --session SESSION_ID --to ACTOR_OR_SESSION --reply-to EVENT_ID --key KEY --message "..."`
+
+   ```sh
+   mesij reply --actor github-copilot --session SESSION_ID \
+     --to ACTOR_OR_SESSION --reply-to EVENT_ID --key KEY --message "..."
+   ```
+
 3. Announce planning, then implementation, using the same work identity and
    stable retry keys:
    `mesij plan --actor github-copilot --session SESSION_ID --task TASK_ID --file PATH --key "TASK_ID:plan"`

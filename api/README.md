@@ -3,7 +3,9 @@
 This directory contains a portable, framework-free, **standalone** REST API for
 Mesij-style event exchange. The same Fetch API handler runs on **Node.js 24+**
 with built-in `node:sqlite` and on **Cloudflare Workers** with D1. Its database is
-owned by this package and must not be shared with the Go Mesij CLI.
+owned by this package and must not be shared with the Go Mesij CLI. See the
+[protocol standalone profile](../docs/protocol.md#11-standalone-rest-api-profile)
+for normative behavior.
 
 The MVP implements only:
 
@@ -25,7 +27,7 @@ point it at a Go Mesij database.
 From `api/`:
 
 ```sh
-npm install
+npm ci
 npm test
 npm run typecheck
 ```
@@ -52,6 +54,22 @@ The server binds to `127.0.0.1:7337` by default. Override with `--host` and
 `--port`. Keep it on loopback unless TLS and other edge controls are provided by
 a trusted reverse proxy.
 
+The standalone CLI recognizes:
+
+| Environment | Meaning |
+| --- | --- |
+| `MESIJ_DB` | Standalone Node database path |
+| `MESIJ_PROJECT_ID` | Opaque project scope for tokens and events |
+| `MESIJ_WORKTREE` | Optional source context written to events |
+| `MESIJ_BRANCH` | Optional source branch context |
+| `MESIJ_COMMIT` | Optional source commit context |
+
+If the shell already exports the Go CLI's `MESIJ_DB`, unset or override it. The
+standalone initializer refuses canonical Go databases, but an inherited path can
+still cause confusing startup failures. `db init --project` reports the selected
+scope; it does not permanently bind the file to one project. Use the same
+project ID for initialization, token creation, and serving.
+
 Token administration:
 
 ```sh
@@ -71,7 +89,9 @@ Every `/v1/*` request requires the token in this exact header name:
 x-message-api-token: mesij_v1.<token-id>.<secret>
 ```
 
-`Authorization` is not accepted. `/healthz` is intentionally unauthenticated.
+HTTP header names are case-insensitive, so any casing of
+`x-message-api-token` is equivalent. `Authorization` is not accepted.
+`/healthz` is intentionally unauthenticated.
 
 Create an event:
 
@@ -131,35 +151,45 @@ request with the same filters. Cursors bind the filters and reject snapshots
 beyond the database's current sequence. Event-list JSON is additionally capped
 at approximately 4 MiB, so a page may contain fewer events than `limit` while
 still returning `has_more:true`. Responses also include `next_after`; when a
-snapshot is exhausted it advances to `through`.
+snapshot is exhausted it advances to `through`. `next_after` is informational:
+the current endpoint accepts only the opaque `cursor` and does not yet provide
+an incremental follow/poll cursor for a new snapshot.
 
 ## Cloudflare Workers and D1
 
-1. Create a D1 database, replace both `REPLACE_WITH_D1_DATABASE_ID` and
-   `REPLACE_WITH_PROJECT_ID` in `wrangler.toml`, and keep the project ID stable.
-   The Worker returns `503` for a missing, empty, default, or placeholder project
-   ID rather than falling back to a shared project.
-2. Apply migrations locally or remotely:
+1. Choose one project ID and use the same literal everywhere:
+
+```sh
+PROJECT_ID=demo
+```
+
+   Replace `REPLACE_WITH_D1_DATABASE_ID` in `wrangler.toml` and replace
+   `REPLACE_WITH_PROJECT_ID` with the value of `$PROJECT_ID`. Exporting a shell
+   variable does not rewrite Wrangler's `[vars]` block. The Worker returns `503`
+   for a missing, empty, default, or placeholder project ID.
+
+1. Apply migrations locally or remotely:
 
 ```sh
 npx wrangler d1 migrations apply mesij-api --local
 npx wrangler d1 migrations apply mesij-api --remote
 ```
 
-3. Build the CLI, then generate SQL for a program-generated token:
+1. Build the CLI, then generate SQL for a program-generated token using that
+   same project ID:
 
 ```sh
 npm run build
-node dist/src/cli.js token workers-create --project demo --label production --json
+node dist/src/cli.js token workers-create --project "$PROJECT_ID" --label production --json
 ```
 
 The JSON contains the one-time plaintext token and an `INSERT` containing only
 its hash. To invoke Wrangler and apply the generated SQL directly:
 
 ```sh
-node dist/src/cli.js token workers-create --project demo --label production \
+node dist/src/cli.js token workers-create --project "$PROJECT_ID" --label production \
   --apply --remote --database mesij-api
-node dist/src/cli.js token workers-revoke TOKEN_ID --project demo \
+node dist/src/cli.js token workers-revoke TOKEN_ID --project "$PROJECT_ID" \
   --reason rotated --apply --remote --database mesij-api
 ```
 
@@ -167,6 +197,23 @@ Without `--remote`, `--apply` targets Wrangler's local D1 database. `--config`
 can select another Wrangler configuration. Apply schema migrations before token
 SQL. Deploy with `npx wrangler deploy` after setting `MESIJ_PROJECT_ID` and the
 D1 binding appropriately.
+
+## Responses and errors
+
+| Status | Meaning |
+| ---: | --- |
+| `200` | Read success or identical idempotent replay |
+| `201` | New event inserted |
+| `400` | Invalid JSON, query, cursor, lifecycle, or reply shape |
+| `401` | Generic token authentication failure |
+| `404` | Unknown route |
+| `405` | Unsupported method |
+| `409` | Idempotency conflict |
+| `413` | Request/event exceeds 256 KiB |
+| `500` | Internal failure |
+| `503` | Worker project configuration is missing or unsafe |
+
+Problem responses use `{ "ok": false, "error": "...", "code": "..." }`.
 
 ## Standalone schema and operational caveats
 

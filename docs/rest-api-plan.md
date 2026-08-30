@@ -1,10 +1,21 @@
-# REST API plan
+# Full-parity Go REST API plan
 
 > **Status (August 30, 2026):** [`api/`](../api/README.md) now provides a
 > standalone Node.js 24+/Cloudflare Workers D1 MVP for health, authenticated
 > event writes, and cursor-based event reads. It intentionally uses its own
 > database. The plan below describes the later full-parity API that can share
 > Mesij's service semantics and projections.
+
+## Current MVP versus target
+
+| Area | Standalone TypeScript MVP | Planned full-parity Go API |
+| --- | --- | --- |
+| Database | Separate metadata-marked SQLite/D1 database | Canonical Go project database |
+| Request limit | 256 KiB | Proposed 4 MiB |
+| Reads | Status and bounded event snapshots | Check, agents, inbox, snapshots, and streams |
+| Writes | Immutable event facts only | Canonical registry, mentions, work projections, and routing |
+| Recipients | Exact stored string | Exact session, unique actor alias, and validated replies |
+| Runtime | Node.js 24+ and Cloudflare Workers/D1 | Go `net/http` server |
 
 ## Goal
 
@@ -19,7 +30,7 @@ x-message-api-token: mesij_v1.<token-id>.<secret>
 Tokens are created and revoked through the local CLI. Token administration is
 not exposed over HTTP in the first version.
 
-## MVP contract
+## Target contract
 
 The server defaults to `127.0.0.1:7337`. All `/v1/*` routes require exactly one
 non-empty `x-message-api-token` header. `/healthz` is unauthenticated and reveals
@@ -81,8 +92,10 @@ CREATE TABLE api_token_revocations (
 ) WITHOUT ROWID;
 ```
 
-Add update/delete rejection triggers. Creation and revocation are append-only;
-an active token is one without a matching revocation row.
+Add update/delete triggers and immutable-insert guards that prevent
+`INSERT OR REPLACE` from replacing existing token or revocation identities.
+Creation and revocation are append-only; an active token is one without a
+matching revocation row.
 
 Token format:
 

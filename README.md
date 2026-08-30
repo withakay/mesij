@@ -5,6 +5,19 @@ append-only SQLite event log. It helps an agent discover work already underway,
 avoid overlapping edits, publish progress, and reply directly to another agent
 session.
 
+Start with the [documentation index](docs/README.md), the
+[getting-started guide](docs/getting-started.md), or the normative
+[protocol and process flows](docs/protocol.md).
+
+## Choose a deployment
+
+| Need | Implementation |
+| --- | --- |
+| Full coordination, projections, conflict checks, inboxes, hooks, and TUI | Canonical Go CLI |
+| Authenticated event exchange on Node.js or Cloudflare Workers/D1 | Standalone TypeScript API in `api/` |
+
+The two implementations intentionally use separate databases.
+
 ## Design
 
 - **Worktree-aware:** linked Git worktrees derive one project identity and share
@@ -25,24 +38,36 @@ session.
   returns the original event; reusing a key with different data fails.
 - **Direct replies:** `--to SESSION` marks an intended recipient, while preserving
   the event in the public project log. This is routing, not access control.
-- **Aliases and mentions:** `--to ACTOR` resolves the most recently seen session;
-  inline `@actor` mentions appear in that actor's inbox.
+- **Aliases and mentions:** `--to ACTOR` resolves only when that actor has one
+  known session; inline `@actor` mentions on `message.%` events appear in that
+  actor's inbox.
 
 ## Install
 
-After the first release is published, install the latest release with:
+As of **August 30, 2026**, no GitHub release has been published. Build and
+install from source:
+
+```sh
+git clone https://github.com/withakay/mesij.git
+cd mesij
+go test ./...
+go build -o ./bin/mesij ./cmd/mesij
+mkdir -p "$HOME/.local/bin"
+install -m 0755 ./bin/mesij "$HOME/.local/bin/mesij"
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+See [Getting started](docs/getting-started.md) for the full first-session flow.
+Once a release exists, the repository installer will support release archives:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh
 ```
 
-The installer places `mesij` in `$HOME/.local/bin`, verifies the downloaded
-archive with the release checksums, and supports macOS and Linux on amd64 and
-arm64. Use a project-local directory or pin a version when needed:
+Use a project-local destination when needed:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh -s -- --dir ./local/bin
-curl -fsSL https://raw.githubusercontent.com/withakay/mesij/main/install.sh | sh -s -- --version 0.1.0
 ```
 
 Release-please opens a release PR from Conventional Commit messages. Merging
@@ -55,7 +80,7 @@ Makefile provides short wrappers around those tasks.
 
 ```sh
 mise install
-make
+make build
 make check
 make install
 ```
@@ -118,9 +143,9 @@ mesij --project payments post \
   --key pay-142:handler-done \
   --message "Handler is complete; migration remains"
 
-# Address another session or actor alias. A reply ID routes back automatically.
+# Address the original sender. A reply ID routes automatically.
 mesij --project payments reply \
-  --to reviewer --reply-to 90ac42... \
+  --reply-to 90ac42... \
   --key pay-142:reply-review \
   --message "Please defer the migration; I am changing the same table"
 
@@ -132,7 +157,8 @@ mesij --project payments finish \
 
 `MESIJ_ACTOR`, `MESIJ_SESSION`, `MESIJ_PROJECT`, and `MESIJ_DB` can replace their
 corresponding flags. `post`, `plan`, `implement`, `start`, `finish`, `defer`,
-and `reply` require a session.
+and `reply` require a session. Claims and messages are shared project metadata;
+do not post secrets.
 
 ## Commands
 
@@ -149,8 +175,8 @@ and `reply` require a session.
   the resulting event as JSON.
 - `reply` — reply to an event or address an actor alias or exact session.
 - `inbox` — list messages sent by, addressed to, or mentioning a session.
-- `hook` — adapt Claude/Codex lifecycle hook JSON to Mesij sessions, inboxes,
-  and pre-edit checks.
+- `hook` — adapt Claude, Codex, and GitHub Copilot lifecycle hook JSON to
+  Mesij sessions, inboxes, and pre-edit checks.
 - `status` — show project, worktree, branch, commit, and database identity.
 - `tail` — emit the event stream as JSONL; add `--follow` to keep watching.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
@@ -160,8 +186,8 @@ Lifecycle commands accept `--work`, `--task`, `--change`, and repeatable
 `--file`; pass `--file` once per affected path. The work identity defaults to
 `task:TASK` or `change:CHANGE`; use an explicit `--work` when neither is present.
 Reusing the same identity moves one claim from plan to implement to
-finished/deferred. Known task/change/file scopes
-are carried forward conservatively, so an implementation event does not need to
+finished/deferred. Claims do not expire automatically. Known task/change/file
+scopes are carried forward conservatively, so an implementation event does not
 repeat every file named during planning. If task/change identities are ambiguous,
 mesij asks for an explicit `--work`.
 
@@ -208,11 +234,13 @@ Without an explicit `--after`, `tail` emits the most recent window. With
 `--session`, `--limit`, and `--poll`.
 
 `check --json` returns one coordination report containing `through`,
-`active_work`, and `messages`. Persist `through` even when filters match no
-events. Active entries keep the immutable stored `payload` and include a derived
-`projection` containing scopes carried forward from prior lifecycle events.
-Supplying `check --session ID` includes broadcasts and messages addressed to
-that session; omitting it displays the complete log.
+`active_work`, and `messages`. For automated reads, use a `limit` from 1 to
+1,000. If `messages` contains that many rows, continue with `--after` set to the
+last message sequence. Only after a short or empty page is it safe to persist
+`through`, including quiet filtered intervals. Active entries keep the immutable stored `payload` and
+include a derived `projection` containing scopes carried forward from prior
+lifecycle events. Supplying `check --session ID` includes broadcasts and
+messages addressed to that session; omitting it displays the complete log.
 
 ## Project resolution
 
@@ -220,8 +248,11 @@ Resolution uses the following order:
 
 1. `--db` or `MESIJ_DB` selects an explicit database. Project IDs then derive
    from the canonical database path and project name in every working directory.
-2. `--project name:NAME` selects a logical name without filesystem probing.
-3. `--project path:PATH` selects an explicit project directory.
+2. `--project name:NAME` sets an explicit name while retaining normal
+   Git/marker/path locator discovery.
+3. `--project path:PATH` selects the discovery starting directory. In a non-Git
+   project it pins that directory; inside Git, the containing repository root and
+   common directory still define the project.
 4. Git projects derive identity from the canonical Git common directory.
 5. Non-Git projects use the nearest `.mesij-project` marker, then the canonical
    current path.
@@ -260,7 +291,7 @@ in [`docs/rest-api-plan.md`](docs/rest-api-plan.md).
 
 Each row contains a monotonic sequence cursor, random event ID, project ID,
 actor, session, optional recipient/reply target, event type, JSON payload,
-worktree/branch/commit context, idempotency key, and UTC timestamp. Consumers can
-poll without gaps by explicitly starting with `check --after 0`, then advancing
-to the greatest returned sequence. When `--after` is omitted, `check` shows the
-most recent window for humans.
+worktree/branch/commit context, idempotency key, and UTC timestamp. Automated
+`check` consumers should drain full pages from the last message sequence and
+persist `through` only after a short or empty page. When `--after` is omitted,
+`check` shows the most recent window for humans.

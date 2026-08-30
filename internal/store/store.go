@@ -416,8 +416,8 @@ func (d *DB) ProjectionErrorCount(ctx context.Context, projectID string) (int, e
 	return count, err
 }
 
-// ResolveRecipient accepts an exact session ID or the most recently seen
-// session for an actor alias.
+// ResolveRecipient accepts an exact session ID or an actor alias with exactly
+// one known session.
 func (d *DB) ResolveRecipient(ctx context.Context, projectID, recipient string) (string, error) {
 	var session string
 	err := d.db.QueryRowContext(ctx, `SELECT session_id FROM agents WHERE project_id = ? AND session_id = ?`, projectID, recipient).Scan(&session)
