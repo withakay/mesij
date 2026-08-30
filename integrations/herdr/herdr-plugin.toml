@@ -1,0 +1,78 @@
+id = "withakay.mesij"
+name = "Mesij"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "View Mesij coordination, inboxes, agents, and event streams inside Herdr"
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "tui"
+title = "Open Mesij dashboard"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "scripts/open.mjs", "tui"]
+
+[[actions]]
+id = "check"
+title = "Check Mesij conflicts"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "scripts/open.mjs", "check"]
+
+[[actions]]
+id = "inbox"
+title = "Open focused agent Mesij inbox"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "scripts/open.mjs", "inbox"]
+
+[[actions]]
+id = "agents"
+title = "List Mesij agents"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "scripts/open.mjs", "agents"]
+
+[[actions]]
+id = "tail"
+title = "Follow Mesij event stream"
+contexts = ["workspace", "tab", "pane"]
+command = ["node", "scripts/open.mjs", "tail"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "scripts/notify.mjs"]
+
+[[panes]]
+id = "tui"
+title = "Mesij"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["node", "scripts/report.mjs", "tui"]
+
+[[panes]]
+id = "check"
+title = "Mesij check"
+placement = "popup"
+width = "90%"
+height = "75%"
+command = ["node", "scripts/report.mjs", "check"]
+
+[[panes]]
+id = "inbox"
+title = "Mesij inbox"
+placement = "popup"
+width = "90%"
+height = "75%"
+command = ["node", "scripts/report.mjs", "inbox"]
+
+[[panes]]
+id = "agents"
+title = "Mesij agents"
+placement = "popup"
+width = "90%"
+height = "75%"
+command = ["node", "scripts/report.mjs", "agents"]
+
+[[panes]]
+id = "tail"
+title = "Mesij event stream"
+placement = "tab"
+command = ["node", "scripts/report.mjs", "tail"]

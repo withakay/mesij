@@ -276,6 +276,8 @@ and retain their original project IDs. New projects use external storage.
 - `opencode/` — OpenCode plugin with native tools, inbox polling, and skill.
 - `pi/` — installable Pi extension/skill package with native tools and inbox
   polling.
+- `herdr/` — Herdr plugin with Mesij panes, actions, and status-change inbox
+  notifications.
 - `generic/agent-start.sh` — shell bootstrap for other harnesses.
 
 Claude, Codex, and GitHub Copilot CLI share the first-class `mesij hook`

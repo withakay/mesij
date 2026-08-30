@@ -17,6 +17,7 @@ All integrations require a current `mesij` binary on `PATH`.
 | GitHub Copilot CLI | Yes | Post-tool and stop hooks | No | `edit` / `write` / `create` / `apply_patch` | `MESIJ_HOOK_MODE=deny` | No |
 | OpenCode | Yes | Three-second poll | Yes | First-class edit/write/patch tools | `MESIJ_ENFORCE_CONFLICTS=1` | No |
 | Pi | Yes | Three-second poll | Yes | No automatic interception | No | No |
+| Herdr | Observes native session | Status-change notification | Human actions/panes | No | No | No |
 
 Skills remain authoritative because shell-based mutation may bypass file-tool
 hooks. No integration automatically finishes claims on shutdown.
@@ -105,6 +106,20 @@ pi install ./integrations/pi
 The extension exposes the same four tools, provides `/mesij-inbox`, injects new
 messages without forcing an idle turn, and maps Pi's durable session ID to
 Mesij. See `pi/README.md`.
+
+## Herdr
+
+`herdr/` is a Herdr v1 plugin with popup/tab panes for the Mesij TUI, checks,
+inboxes, agents, and JSONL tailing. It also maps Herdr native agent sessions to
+Mesij sessions and shows notifications for unread messages when agents settle.
+
+```sh
+herdr plugin link "$PWD/integrations/herdr"
+# or, with repository access:
+herdr plugin install withakay/mesij/integrations/herdr
+```
+
+See [`herdr/README.md`](herdr/README.md).
 
 ## Generic integrations
 
