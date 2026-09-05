@@ -27,6 +27,7 @@ type Context struct {
 	Worktree   string `json:"worktree"`
 	Branch     string `json:"branch,omitempty"`
 	Commit     string `json:"commit,omitempty"`
+	Source     Source `json:"source"`
 }
 
 type marker struct {
@@ -153,6 +154,7 @@ func makeContext(invocation, root, common, database, name, locator, branch, comm
 	return Context{
 		Name: name, ID: id, Root: root, CommonDir: common, Database: database,
 		Invocation: invocation, Worktree: root, Branch: branch, Commit: commit,
+		Source: ObserveSource(),
 	}, nil
 }
 

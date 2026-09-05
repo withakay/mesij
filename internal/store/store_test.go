@@ -528,3 +528,28 @@ func TestListHonorsSnapshotHighWater(t *testing.T) {
 		t.Fatalf("snapshot events = %+v", events)
 	}
 }
+
+func TestSourceContextRoundTripsAndIsNotComparedOnRetry(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	first := NewEvent{ProjectID: "project", Actor: "agent", Session: "session", Type: "message.posted",
+		Payload: json.RawMessage(`{"message":"hi"}`), Worktree: "/repo", Branch: "main", Commit: "abc",
+		Host: "laptop", User: "jack", IP: "100.64.0.9", IdempotencyKey: "source-key"}
+	event, inserted, err := db.Append(ctx, first)
+	if err != nil || !inserted {
+		t.Fatalf("append: inserted=%v err=%v", inserted, err)
+	}
+	if event.Host != "laptop" || event.User != "jack" || event.IP != "100.64.0.9" {
+		t.Fatalf("source context not stored: %+v", event)
+	}
+	listed, err := db.List(ctx, Query{ProjectID: "project", Limit: 10})
+	if err != nil || len(listed) != 1 || listed[0].Host != "laptop" || listed[0].IP != "100.64.0.9" {
+		t.Fatalf("list = %+v err=%v", listed, err)
+	}
+	retry := first
+	retry.Host, retry.IP = "laptop.lan", "192.168.1.2"
+	again, inserted, err := db.Append(ctx, retry)
+	if err != nil || inserted || again.ID != event.ID {
+		t.Fatalf("retry with changed host/ip must return original: inserted=%v err=%v", inserted, err)
+	}
+}

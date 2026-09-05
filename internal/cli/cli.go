@@ -253,7 +253,7 @@ func (r Runner) session(ctx context.Context, p project.Context, args []string) i
 	defer db.Close()
 	event, _, err := db.Append(ctx, store.NewEvent{
 		ProjectID: p.ID, Actor: *actor, Session: *sessionID, Type: "session.started", Payload: payload,
-		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: "session-started",
+		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, Host: p.Source.Host, User: p.Source.User, IP: p.Source.IP, IdempotencyKey: "session-started",
 	})
 	if err != nil {
 		return r.fail(err)
@@ -414,7 +414,7 @@ func (r Runner) post(ctx context.Context, p project.Context, args []string, defa
 	event, inserted, err := db.Append(ctx, store.NewEvent{
 		ProjectID: p.ID, Actor: *actor, Session: *session, Recipient: recipient, ReplyTo: *replyTo,
 		Type: *typeName, Payload: payloadJSON,
-		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: *key, Mentions: mentions,
+		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, Host: p.Source.Host, User: p.Source.User, IP: p.Source.IP, IdempotencyKey: *key, Mentions: mentions,
 	})
 	if err != nil {
 		return r.fail(err)
@@ -534,7 +534,7 @@ func (r Runner) lifecycle(ctx context.Context, p project.Context, args []string,
 	})
 	event, inserted, err := db.Append(ctx, store.NewEvent{
 		ProjectID: p.ID, Actor: *actor, Session: *session, Type: eventType, Payload: payloadJSON,
-		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: *key,
+		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, Host: p.Source.Host, User: p.Source.User, IP: p.Source.IP, IdempotencyKey: *key,
 	})
 	if err != nil {
 		return r.fail(err)
@@ -892,7 +892,8 @@ func (r Runner) status(p project.Context, args []string) int {
 	if *jsonOutput {
 		return r.writeJSON(p)
 	}
-	fmt.Fprintf(r.Stdout, "project:  %s (%s)\nworktree: %s\nbranch:   %s\ncommit:   %s\ndatabase: %s\n", p.Name, p.ID, p.Worktree, p.Branch, p.Commit, p.Database)
+	fmt.Fprintf(r.Stdout, "project:  %s (%s)\nworktree: %s\nbranch:   %s\ncommit:   %s\ndatabase: %s\nhost:     %s\nuser:     %s\nip:       %s\n",
+		p.Name, p.ID, p.Worktree, p.Branch, p.Commit, p.Database, p.Source.Host, p.Source.User, p.Source.IP)
 	return 0
 }
 

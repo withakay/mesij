@@ -21,7 +21,8 @@ Project selectors use `name:` and `path:` prefixes to avoid filesystem-dependent
 interpretation.
 
 Actor aliases are human-readable identities. Sessions identify one agent run.
-Events record both, plus worktree, branch, and observed commit.
+Events record both, plus worktree, branch, observed commit, and best-effort
+machine context (host, OS user, IP) for future multi-machine backends.
 
 Aliases are routing conveniences, not authenticated identities. If an alias has
 more than one known session, Mesij rejects alias routing and requires an exact

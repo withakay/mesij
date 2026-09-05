@@ -121,6 +121,14 @@ Canonical events record the writer-observed worktree, branch, and commit SHA.
 These values are context only and do not prove that work was committed or
 merged.
 
+Events also record best-effort machine context: `host` (hostname), `user`
+(OS user), and `ip` (one representative address, preferring a Tailscale
+address, then a non-loopback IPv4, then IPv6). These fields are informational
+and self-reported. They **MUST NOT** be used for identity, access control, or
+idempotency comparison, because hostnames and addresses can change within one
+session. A remote backend **SHOULD** additionally record the peer address and
+receipt time it observes; those server-side values are the trustworthy ones.
+
 ## 3. Event envelope
 
 A canonical event has this JSON shape:
@@ -140,6 +148,9 @@ A canonical event has this JSON shape:
   "worktree": "/repo/worktree",
   "branch": "feature/capture",
   "commit": "abcdef1234",
+  "host": "laptop",
+  "user": "jack",
+  "ip": "100.101.102.103",
   "idempotency_key": "pay-142:update-1",
   "created_at": "2026-08-30T12:00:00.123456789Z"
 }
@@ -158,6 +169,7 @@ A canonical event has this JSON shape:
 | `payload` | Valid JSON event data |
 | `projection` | Optional derived lifecycle state returned by active reads |
 | `worktree`, `branch`, `commit` | Writer-observed source context |
+| `host`, `user`, `ip` | Optional best-effort machine context; informational only |
 | `idempotency_key` | Nonempty key scoped to project and session |
 | `created_at` | Program-generated UTC RFC 3339 timestamp |
 
@@ -221,7 +233,8 @@ On first use, the canonical writer **MUST** atomically:
 
 On key reuse, the implementation **MUST** load the original event and compare
 project, actor, session, recipient, reply target, type, payload, and source
-context. Generated ID, sequence, and timestamp are excluded.
+context (worktree, branch, commit). Generated ID, sequence, timestamp, and
+machine context (`host`, `user`, `ip`) are excluded.
 
 - An equivalent retry returns the original event with `inserted:false`.
 - A changed retry returns an idempotency conflict.

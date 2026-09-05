@@ -200,7 +200,7 @@ func (r Runner) hookSessionStart(ctx context.Context, p project.Context, input h
 	payload, _ := json.Marshal(messagePayload{Message: "Agent session opened"})
 	_, _, err = db.Append(ctx, store.NewEvent{
 		ProjectID: p.ID, Actor: actor, Session: session, Type: "session.started", Payload: payload,
-		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, IdempotencyKey: "session-started",
+		Worktree: p.Worktree, Branch: p.Branch, Commit: p.Commit, Host: p.Source.Host, User: p.Source.User, IP: p.Source.IP, IdempotencyKey: "session-started",
 	})
 	if err != nil {
 		return r.hookWarning(err)

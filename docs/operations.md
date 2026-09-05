@@ -64,8 +64,9 @@ The backup command above verifies the exact file it created.
 ## Schema upgrades
 
 The canonical store migrates automatically when opened. The current schema is
-version 3. When upgrading from a schema before version 2, Mesij rebuilds agents,
-mentions, active work, and projection errors by replaying events.
+version 4. When upgrading from a schema before version 2, Mesij rebuilds agents,
+mentions, active work, and projection errors by replaying events. Version 4 adds
+the `host`, `user_name`, and `ip` columns; existing rows keep empty values.
 
 Malformed historical lifecycle events remain immutable. Mesij records their IDs
 in `projection_errors`; `check` reports the project count.

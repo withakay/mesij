@@ -37,6 +37,9 @@ type Event struct {
 	Worktree       string          `json:"worktree"`
 	Branch         string          `json:"branch,omitempty"`
 	Commit         string          `json:"commit,omitempty"`
+	Host           string          `json:"host,omitempty"`
+	User           string          `json:"user,omitempty"`
+	IP             string          `json:"ip,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key"`
 	CreatedAt      time.Time       `json:"created_at"`
 }
@@ -52,6 +55,9 @@ type NewEvent struct {
 	Worktree       string
 	Branch         string
 	Commit         string
+	Host           string
+	User           string
+	IP             string
 	IdempotencyKey string
 	Mentions       []string
 }
@@ -76,7 +82,7 @@ type Agent struct {
 
 type DB struct{ db *sql.DB }
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 func Open(ctx context.Context, path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -131,6 +137,9 @@ CREATE TABLE IF NOT EXISTS events (
     worktree          TEXT NOT NULL,
     branch            TEXT NOT NULL,
     commit_sha        TEXT NOT NULL,
+    host              TEXT NOT NULL DEFAULT '',
+    user_name         TEXT NOT NULL DEFAULT '',
+    ip                TEXT NOT NULL DEFAULT '',
     idempotency_key   TEXT NOT NULL CHECK(length(idempotency_key) > 0),
     created_at        TEXT NOT NULL
 );
@@ -214,6 +223,11 @@ END;
 	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
+	if version < 4 {
+		if err := addSourceColumns(ctx, tx); err != nil {
+			return fmt.Errorf("add source columns: %w", err)
+		}
+	}
 	if version < 2 {
 		if err := rebuildActiveWork(ctx, tx); err != nil {
 			return fmt.Errorf("rebuild active work: %w", err)
@@ -278,10 +292,10 @@ func (d *DB) Append(ctx context.Context, in NewEvent) (event Event, inserted boo
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx, `
 INSERT INTO events
-(id, project_id, actor, session_id, recipient_session, reply_to, event_type, payload, worktree, branch, commit_sha, idempotency_key, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+(id, project_id, actor, session_id, recipient_session, reply_to, event_type, payload, worktree, branch, commit_sha, host, user_name, ip, idempotency_key, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, in.ProjectID, in.Actor, in.Session, in.Recipient, in.ReplyTo, in.Type, string(in.Payload),
-		in.Worktree, in.Branch, in.Commit, in.IdempotencyKey, created)
+		in.Worktree, in.Branch, in.Commit, in.Host, in.User, in.IP, in.IdempotencyKey, created)
 	if err != nil {
 		return Event{}, false, fmt.Errorf("append event: %w", err)
 	}
@@ -351,7 +365,7 @@ func sameEvent(got Event, want NewEvent) bool {
 func (d *DB) byKey(ctx context.Context, projectID, session, key string) (Event, error) {
 	row := d.db.QueryRowContext(ctx, `
 SELECT e.sequence, e.id, e.project_id, e.actor, e.session_id, e.recipient_session, e.reply_to, e.event_type,
-       e.payload, e.worktree, e.branch, e.commit_sha, e.idempotency_key, e.created_at
+       e.payload, e.worktree, e.branch, e.commit_sha, e.host, e.user_name, e.ip, e.idempotency_key, e.created_at
 FROM events e
 JOIN idempotency_keys k ON k.event_id = e.id
 WHERE k.project_id = ? AND k.session_id = ? AND k.key = ?`, projectID, session, key)
@@ -375,7 +389,7 @@ func (d *DB) List(ctx context.Context, q Query) ([]Event, error) {
 	}
 	base := `
 SELECT sequence, id, project_id, actor, session_id, recipient_session, reply_to, event_type,
-       payload, worktree, branch, commit_sha, idempotency_key, created_at
+       payload, worktree, branch, commit_sha, host, user_name, ip, idempotency_key, created_at
 FROM events
 WHERE project_id = ? AND sequence > ?
   AND (? = 0 OR sequence <= ?)
@@ -509,7 +523,7 @@ func (d *DB) Inbox(ctx context.Context, projectID, session string, after int64, 
 	}
 	rows, err := d.db.QueryContext(ctx, `
 SELECT DISTINCT e.sequence, e.id, e.project_id, e.actor, e.session_id, e.recipient_session, e.reply_to, e.event_type,
-       e.payload, e.worktree, e.branch, e.commit_sha, e.idempotency_key, e.created_at
+       e.payload, e.worktree, e.branch, e.commit_sha, e.host, e.user_name, e.ip, e.idempotency_key, e.created_at
 FROM events e
 LEFT JOIN mentions m ON m.event_id = e.id
 WHERE e.project_id = ? AND e.sequence > ? AND e.event_type LIKE 'message.%'
@@ -530,13 +544,48 @@ ORDER BY e.sequence ASC LIMIT ?`, projectID, after, session, session, actor, lim
 	return events, rows.Err()
 }
 
+// addSourceColumns adds writer-observed host/user/ip columns to databases
+// created before schema version 4. It checks the live table so version-0
+// development databases that already had an events table migrate too.
+func addSourceColumns(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info(events)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, column := range []string{"host", "user_name", "ip"} {
+		if existing[column] {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE events ADD COLUMN "+column+" TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func rebuildActiveWork(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM active_work; DELETE FROM mentions; DELETE FROM agents; DELETE FROM projection_errors;`); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(ctx, `
 SELECT sequence, id, project_id, actor, session_id, recipient_session, reply_to, event_type,
-       payload, worktree, branch, commit_sha, idempotency_key, created_at
+       payload, worktree, branch, commit_sha, host, user_name, ip, idempotency_key, created_at
 FROM events ORDER BY sequence ASC`)
 	if err != nil {
 		return err
@@ -738,7 +787,7 @@ func (d *DB) Active(ctx context.Context, projectID string) ([]Event, error) {
 func (d *DB) ActiveThrough(ctx context.Context, projectID string, through int64) ([]Event, error) {
 	rows, err := d.db.QueryContext(ctx, `
 SELECT e.sequence, e.id, e.project_id, e.actor, e.session_id, e.recipient_session, e.reply_to, e.event_type,
-       e.payload, e.worktree, e.branch, e.commit_sha, e.idempotency_key, e.created_at, a.projection
+       e.payload, e.worktree, e.branch, e.commit_sha, e.host, e.user_name, e.ip, e.idempotency_key, e.created_at, a.projection
 FROM active_work a
 JOIN events e ON e.id = a.event_id
 WHERE a.project_id = ? AND (? = 0 OR e.sequence <= ?)
@@ -817,7 +866,7 @@ func scanEvent(s scanner) (Event, error) {
 	var e Event
 	var payload, created string
 	err := s.Scan(&e.Sequence, &e.ID, &e.ProjectID, &e.Actor, &e.Session, &e.Recipient, &e.ReplyTo,
-		&e.Type, &payload, &e.Worktree, &e.Branch, &e.Commit, &e.IdempotencyKey, &created)
+		&e.Type, &payload, &e.Worktree, &e.Branch, &e.Commit, &e.Host, &e.User, &e.IP, &e.IdempotencyKey, &created)
 	if err != nil {
 		return Event{}, err
 	}
@@ -830,7 +879,7 @@ func scanProjectedEvent(s scanner) (Event, error) {
 	var event Event
 	var payload, projection, created string
 	err := s.Scan(&event.Sequence, &event.ID, &event.ProjectID, &event.Actor, &event.Session, &event.Recipient, &event.ReplyTo,
-		&event.Type, &payload, &event.Worktree, &event.Branch, &event.Commit, &event.IdempotencyKey, &created, &projection)
+		&event.Type, &payload, &event.Worktree, &event.Branch, &event.Commit, &event.Host, &event.User, &event.IP, &event.IdempotencyKey, &created, &projection)
 	if err != nil {
 		return Event{}, err
 	}
