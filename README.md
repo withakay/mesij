@@ -253,7 +253,11 @@ Resolution uses the following order:
 3. `--project path:PATH` selects the discovery starting directory. In a non-Git
    project it pins that directory; inside Git, the containing repository root and
    common directory still define the project.
-4. Git projects derive identity from the canonical Git common directory.
+4. Git projects derive identity from the canonical Git common directory. The
+   default name comes from the `origin` remote as `org-repo` (for example
+   `withakay-mesij`), otherwise from the directory that owns `.git` or a bare
+   `.bare` directory. A linked worktree's directory name is never used, so every
+   worktree of one repository resolves to the same project.
 5. Non-Git projects use the nearest `.mesij-project` marker, then the canonical
    current path.
 

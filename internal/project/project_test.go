@@ -194,3 +194,69 @@ func run(t *testing.T, name string, args ...string) {
 		t.Fatalf("%s %v: %v\n%s", name, args, err, out)
 	}
 }
+
+func TestRemoteProjectName(t *testing.T) {
+	cases := map[string]string{
+		"https://github.com/withakay/mesij.git":       "withakay-mesij",
+		"https://github.com/withakay/mesij":           "withakay-mesij",
+		"git@github.com:withakay/mesij.git":           "withakay-mesij",
+		"ssh://git@github.com/withakay/mesij.git":     "withakay-mesij",
+		"https://dev.azure.com/org/project/_git/repo": "project-repo",
+		"/Users/jack/repos/local.git":                 "local",
+		"file:///Users/jack/repos/local":              "local",
+		"C:\\repos\\local":                            "local",
+		"":                                            "",
+	}
+	for remote, want := range cases {
+		if got := remoteProjectName(remote); got != want {
+			t.Errorf("remoteProjectName(%q) = %q, want %q", remote, got, want)
+		}
+	}
+}
+
+func TestDefaultProjectNameNeverUsesWorktreeName(t *testing.T) {
+	cases := []struct{ common, remote, want string }{
+		{"/code/withakay-mesij/.bare", "", "withakay-mesij"},
+		{"/code/withakay-mesij/.git", "", "withakay-mesij"},
+		{"/code/mesij.git", "", "mesij"},
+		{"/code/withakay-mesij/.bare", "git@github.com:withakay/mesij.git", "withakay-mesij"},
+		{"/code/other-dir/.bare", "https://github.com/withakay/mesij", "withakay-mesij"},
+	}
+	for _, tc := range cases {
+		if got := defaultProjectName(tc.common, tc.remote); got != tc.want {
+			t.Errorf("defaultProjectName(%q, %q) = %q, want %q", tc.common, tc.remote, got, tc.want)
+		}
+	}
+}
+
+func TestDiscoverBareRepoWorktreesUseRemoteName(t *testing.T) {
+	t.Setenv("MESIJ_HOME", t.TempDir())
+	t.Setenv("MESIJ_DB", "")
+	t.Setenv("MESIJ_PROJECT", "")
+	parent := filepath.Join(t.TempDir(), "withakay-mesij")
+	bare := filepath.Join(parent, ".bare")
+	run(t, "git", "init", "--bare", bare)
+	run(t, "git", "-C", bare, "remote", "add", "origin", "git@github.com:withakay/mesij.git")
+	main := filepath.Join(parent, "main")
+	run(t, "git", "-C", bare, "worktree", "add", "--orphan", "-b", "main", main)
+	run(t, "git", "-C", main, "config", "user.email", "test@example.com")
+	run(t, "git", "-C", main, "config", "user.name", "Test")
+	run(t, "git", "-C", main, "commit", "--allow-empty", "-m", "initial")
+	feature := filepath.Join(parent, "feature")
+	run(t, "git", "-C", main, "worktree", "add", "-b", "feature", feature)
+
+	a, err := Discover(main, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Discover(feature, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name != "withakay-mesij" || b.Name != "withakay-mesij" {
+		t.Fatalf("expected remote-derived name, got %q and %q", a.Name, b.Name)
+	}
+	if a.ID != b.ID || a.Database != b.Database {
+		t.Fatalf("worktrees must share one project: %+v vs %+v", a, b)
+	}
+}

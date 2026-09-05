@@ -103,7 +103,8 @@ func discoverGit(invocation, projectDir, root, database, projectName string, dat
 	branch, _ := git(projectDir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	commit, _ := git(projectDir, "rev-parse", "--verify", "HEAD")
 	if projectName == "" {
-		projectName = defaultProjectName(common, root)
+		remote, _ := git(projectDir, "remote", "get-url", "origin")
+		projectName = defaultProjectName(common, remote)
 	}
 	if database == "" {
 		legacy := filepath.Join(common, "mesij", "events.sqlite3")
@@ -242,14 +243,64 @@ func findMarker(start string) (string, string, bool) {
 	}
 }
 
-func defaultProjectName(common, root string) string {
-	if filepath.Base(common) == ".git" {
-		return filepath.Base(filepath.Dir(common))
-	}
-	if name := strings.TrimSuffix(filepath.Base(common), ".git"); name != "" {
+// defaultProjectName derives one name shared by every worktree of a repository.
+// It prefers the origin remote (org/repo joined with "-") and otherwise uses
+// the Git common directory. It never uses a worktree directory name, because
+// linked worktrees must resolve to the same project.
+func defaultProjectName(common, remote string) string {
+	if name := remoteProjectName(remote); name != "" {
 		return name
 	}
-	return filepath.Base(root)
+	base := filepath.Base(common)
+	// ".git" or a hidden bare directory such as ".bare": name the parent.
+	if strings.HasPrefix(base, ".") {
+		return filepath.Base(filepath.Dir(common))
+	}
+	// Bare clone such as "repo.git".
+	return strings.TrimSuffix(base, ".git")
+}
+
+// remoteProjectName extracts "org-repo" from a Git remote URL. Hosted URLs
+// (https, ssh, scp-like) contribute the last two path segments; local paths
+// contribute only the repository directory name.
+func remoteProjectName(remote string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return ""
+	}
+	hosted := false
+	path := remote
+	if i := strings.Index(remote, "://"); i >= 0 {
+		rest := remote[i+3:]
+		hosted = !strings.HasPrefix(remote, "file://")
+		if j := strings.Index(rest, "/"); j >= 0 {
+			path = rest[j:]
+		} else {
+			path = ""
+		}
+	} else if i := strings.Index(remote, ":"); i > 1 && !strings.ContainsAny(remote[:i], "/\\") {
+		// scp-like: [user@]host:org/repo (i > 1 skips Windows drive letters)
+		hosted = true
+		path = remote[i+1:]
+	}
+	var parts []string
+	for _, part := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if part == "" || part == "_git" { // Azure DevOps inserts "_git"
+			continue
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	repo := strings.TrimSuffix(parts[len(parts)-1], ".git")
+	if repo == "" {
+		return ""
+	}
+	if hosted && len(parts) >= 2 {
+		return parts[len(parts)-2] + "-" + repo
+	}
+	return repo
 }
 
 func sanitize(value string) string {
