@@ -1,0 +1,39 @@
+version: 2
+
+project_name: mesij
+
+builds:
+  - id: mesij
+    main: ./cmd/mesij
+    binary: mesij
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: mesij
+    formats:
+      - tar.gz
+    # install.sh expects mesij_<version>_<os>_<arch>.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  # install.sh expects checksums.txt with sha256 lines
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  # release-please creates the GitHub release and its notes first;
+  # goreleaser only attaches artifacts.
+  mode: keep-existing
+
+changelog:
+  disable: true

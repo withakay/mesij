@@ -37,39 +37,12 @@ jobs:
         if: ${{ steps.release.outputs.release_created == 'true' }}
         run: mise run check
 
-      - name: Build release archives
+      - name: Build and upload release archives
         if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -eu
-          mkdir -p dist
-
-          for target in \
-            darwin/amd64 \
-            darwin/arm64 \
-            linux/amd64 \
-            linux/arm64
-          do
-            GOOS="${target%/*}"
-            GOARCH="${target#*/}"
-            archive="mesij_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
-            staging="$(mktemp -d)"
-
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
-              mise exec -- go build -trimpath -o "$staging/mesij" ./cmd/mesij
-
-            tar -C "$staging" -czf "dist/$archive" mesij
-            rm -rf "$staging"
-          done
-
-          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
-
-      - name: Upload release archives
-        if: ${{ steps.release.outputs.release_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.release.outputs.tag_name }}
-        run: |
-          gh release upload "$TAG_NAME" dist/*.tar.gz dist/checksums.txt \
-            --repo "$GITHUB_REPOSITORY"
+          GITHUB_TOKEN: ${{ github.token }}
