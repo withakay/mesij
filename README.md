@@ -180,7 +180,8 @@ do not post secrets.
 - `status` — show project, worktree, branch, commit, and database identity.
 - `tail` — emit the event stream as JSONL; add `--follow` to keep watching.
 - `tui` — open the human-oriented `tview` interface. Press `Tab` to change panes,
-  `r` to refresh, and `q` or `Esc` to quit.
+  `1`, `2`, or `3` for Lite, Normal, or Full columns, `d` to toggle details,
+  `l` to toggle the event log, `r` to refresh, and `q` or `Esc` to quit.
 
 Lifecycle commands accept `--work`, `--task`, `--change`, and repeatable
 `--file`; pass `--file` once per affected path. The work identity defaults to
