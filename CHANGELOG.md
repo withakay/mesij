@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/withakay/mesij/compare/v0.1.0...v0.2.0) (2026-09-06)
+
+
+### Features
+
+* **tui:** add master-detail views and row presets ([#2](https://github.com/withakay/mesij/issues/2)) ([7cf39fb](https://github.com/withakay/mesij/commit/7cf39fb4964b24f406302c3a06d5784491b661eb))
+
 ## 0.1.0 (2026-09-05)
 
 
